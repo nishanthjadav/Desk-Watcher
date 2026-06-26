@@ -34,6 +34,7 @@ No video is ever saved. Only pose keypoints (x/y coordinates) and activity label
 # Backend
 cd backend
 pip install -r requirements.txt
+python download_models.py   # one-time, fetches the MediaPipe pose model (~6 MB)
 
 # Frontend
 cd frontend
@@ -57,6 +58,8 @@ npm run dev
 ```
 
 Open `http://localhost:5173` to see the dashboard.
+
+Events get written to `~/.desk-watcher/events.db` (a local SQLite file, created automatically on first run).
 
 ## Status
 

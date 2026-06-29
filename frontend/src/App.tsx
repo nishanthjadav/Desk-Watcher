@@ -105,11 +105,19 @@ const CATEGORY_COLOR: Record<Category, string> = {
 };
 
 function fmtClock(iso: string): string {
+  // 12-hour with lowercase a/p suffix. Browsers' Intl AM/PM strings are
+  // not customizable, so we format ourselves: "8:13a", "12:00p", "3:30p".
   const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const h = d.getHours();
+  const m = d.getMinutes();
+  const suffix = h < 12 ? "a" : "p";
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}:${m.toString().padStart(2, "0")}${suffix}`;
 }
 
 function fmtHour12(h: number): string {
+  // Hour-only labels for timeline tick marks. "8a" / "12p" — compact
+  // single-letter suffix so labels stay narrow on the ruler.
   if (h === 0) return "12a";
   if (h === 12) return "12p";
   return h < 12 ? `${h}a` : `${h - 12}p`;
@@ -229,18 +237,28 @@ function DayTimeline({ data }: { data: TimelineResp | null }) {
 
   // Coalesce raw sip segments into distinct drinks. Mirrors the backend's
   // _coalesce_sips so the pip lane and legend total match summary.sip_count
-  // exactly. A single drink in real life crosses the wrist-near-nose
-  // threshold a few times in ~10 seconds; we collapse anything within
-  // 90s into one rendered pip placed at the first segment's start.
+  // exactly.
+  //
+  // Algorithm note: the backend compares each sip to the IMMEDIATELY
+  // PREVIOUS sip's timestamp (chain semantics). We must do the same here.
+  // A slow drumbeat of sips ~60s apart should chain into one drink
+  // because each step is < 90s, not split into multiple drinks because
+  // each is > 90s from the FIRST sip.
   const SIP_COALESCE_GAP_MS = 90_000;
   const rawSips = data.segments.filter((s) => s.activity === "sipping");
   const sipSegments: typeof rawSips = [];
+  let prevSipMs: number | null = null;
   for (const seg of rawSips) {
-    const prev = sipSegments[sipSegments.length - 1];
-    if (prev && new Date(seg.start).getTime() - new Date(prev.start).getTime() <= SIP_COALESCE_GAP_MS) {
-      continue; // part of the previous drink
+    const segMs = new Date(seg.start).getTime();
+    if (prevSipMs !== null && segMs - prevSipMs <= SIP_COALESCE_GAP_MS) {
+      // Part of the same drink chain — don't push a new pip, but DO
+      // advance the chain reference so the next sip is measured against
+      // this one, not the original.
+      prevSipMs = segMs;
+      continue;
     }
     sipSegments.push(seg);
+    prevSipMs = segMs;
   }
 
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -748,7 +766,13 @@ export default function App() {
   const today = summary?.date ? new Date(summary.date + "T00:00:00") : new Date();
   const dateLabel = today.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
   const clock = useClock();
-  const clockLabel = clock.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  // Live clock in the header — 12-hour with seconds, lowercase a/p suffix.
+  const ch = clock.getHours();
+  const cm = clock.getMinutes();
+  const cs = clock.getSeconds();
+  const csuf = ch < 12 ? "a" : "p";
+  const ch12 = ch === 0 ? 12 : ch > 12 ? ch - 12 : ch;
+  const clockLabel = `${ch12}:${cm.toString().padStart(2, "0")}:${cs.toString().padStart(2, "0")}${csuf}`;
 
   return (
     <div className="min-h-screen text-ink-100 font-sans">

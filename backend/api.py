@@ -19,6 +19,13 @@ SHORT_BREAK_MAX_S = 20 * 60 # <= 20 min => short break (anything under is a shor
 LUNCH_MIN_S = 20 * 60       # >= 20 min and in midday window => lunch candidate
 LUNCH_WINDOW = (11, 15)     # [start_hour, end_hour) for lunch detection, LOCAL time
 
+# An absence only ends when we see at least this much continuous presence.
+# Without this, a coworker walking past your camera during lunch produces
+# ~2 seconds of "at_desk", which would close the absence and split your
+# lunch into two short breaks. Three minutes is comfortably above the
+# longest "someone walks by" event and comfortably below a real return.
+MIN_RETURN_S = 180
+
 # Sips logged within this window of each other count as one drink. A single
 # drink rarely happens as one continuous wrist-near-nose event — you raise
 # the bottle, sip, lower slightly, sip again. Each crossing of the pose
@@ -73,6 +80,26 @@ def _events_for_day(db: Session, day: date) -> list[Event]:
 
 
 def _pair_absences(events: list[Event], day: date) -> list[dict]:
+    """
+    Walk transitions and emit one absence record per (away → sustained return)
+    pair.
+
+    "Sustained return" means we must see at least MIN_RETURN_S of continuous
+    non-away time before we accept that the absence ended. Brief at_desk
+    bursts caused by a coworker walking through the camera's view should
+    NOT split a lunch into two pieces.
+    """
+    # Precompute the timestamps of the "away" events so we can look ahead
+    # in O(log n) per check.
+    away_times = [e.timestamp for e in events if e.activity == "away"]
+
+    def next_away_after(t: datetime) -> datetime | None:
+        # Linear scan is fine for typical day-sized event lists (<10k rows).
+        # If this ever shows up in profiling, switch to bisect.
+        for at in away_times:
+            if at > t:
+                return at
+        return None
 
     absences: list[dict] = []
     away_start: datetime | None = None
@@ -81,16 +108,30 @@ def _pair_absences(events: list[Event], day: date) -> list[dict]:
         if e.activity == "away":
             if away_start is None:
                 away_start = e.timestamp
-        else:
-            if away_start is not None:
-                absences.append({
-                    "start": away_start,
-                    "end": e.timestamp,
-                    "duration_s": (e.timestamp - away_start).total_seconds(),
-                })
-                away_start = None
+            # else: still away, ignore.
+            continue
+
+        # Non-away event while an absence is open. Decide whether this is
+        # a real return or a brief detection blip mid-absence.
+        if away_start is None:
+            continue
+
+        upcoming_away = next_away_after(e.timestamp)
+        if upcoming_away is not None and (upcoming_away - e.timestamp).total_seconds() < MIN_RETURN_S:
+            # Not sustained — another away comes soon. Treat this as noise
+            # inside the absence; don't close it.
+            continue
+
+        # Sustained return: close the absence here.
+        absences.append({
+            "start": away_start,
+            "end": e.timestamp,
+            "duration_s": (e.timestamp - away_start).total_seconds(),
+        })
+        away_start = None
 
     if away_start is not None:
+        # End-of-day in local time, converted to UTC for arithmetic with timestamps.
         end_of_day_local = datetime.combine(day, dtime.max, tzinfo=LOCAL_TZ)
         end_of_day = end_of_day_local.astimezone(timezone.utc)
         now = _now_utc()

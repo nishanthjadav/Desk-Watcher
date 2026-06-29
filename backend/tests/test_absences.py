@@ -109,6 +109,61 @@ class TestPairAbsences:
         assert len(absences) == 1
         assert absences[0]["duration_s"] == 20 * 60
 
+    def test_brief_at_desk_during_lunch_does_not_split_absence(self):
+        # Regression: someone walks past the camera at 12:04 during your
+        # 11:40–1:20 lunch. MediaPipe sees a pose for 2 seconds and emits
+        # an at_desk event. Without sustained-return semantics this would
+        # close the lunch absence at 12:04 and open a new one at 12:04:02,
+        # splitting your lunch into multiple short breaks.
+        #
+        # With MIN_RETURN_S = 180 (3 min), a brief at_desk followed by
+        # another away within 3 minutes is treated as noise inside the
+        # ongoing absence.
+        d = date(2026, 6, 30)
+        events = [
+            FakeEvent("at_desk", at(9,  0, day=d)),
+            FakeEvent("away",    at(11, 40, day=d)),   # leave for lunch
+            FakeEvent("at_desk", at(12,  4, day=d)),   # ← coworker walks by
+            FakeEvent("away",    at(12,  4, 2, day=d)),  # gone again 2s later
+            FakeEvent("at_desk", at(13, 20, day=d)),   # actually return
+        ]
+        absences = _pair_absences(events, d)
+        assert len(absences) == 1
+        assert absences[0]["duration_s"] == (13 * 3600 + 20 * 60) - (11 * 3600 + 40 * 60)
+
+    def test_multiple_brief_blips_all_absorbed(self):
+        # Several walk-by blips during one long absence — none should split it.
+        d = date(2026, 6, 30)
+        events = [
+            FakeEvent("at_desk", at(9,  0,  day=d)),
+            FakeEvent("away",    at(12, 0,  day=d)),
+            FakeEvent("at_desk", at(12, 15, day=d)),    # blip 1
+            FakeEvent("away",    at(12, 15, 5, day=d)),
+            FakeEvent("at_desk", at(12, 38, day=d)),    # blip 2
+            FakeEvent("away",    at(12, 38, 3, day=d)),
+            FakeEvent("at_desk", at(13, 5,  day=d)),    # real return
+        ]
+        absences = _pair_absences(events, d)
+        assert len(absences) == 1
+        # One continuous absence from 12:00 to 13:05.
+        assert absences[0]["duration_s"] == 65 * 60
+
+    def test_sustained_return_closes_absence_normally(self):
+        # The complementary guard: a real return that's > MIN_RETURN_S
+        # before the next away should close the absence as a normal pair.
+        d = date(2026, 6, 30)
+        events = [
+            FakeEvent("at_desk", at(9,  0,  day=d)),
+            FakeEvent("away",    at(10, 0,  day=d)),
+            FakeEvent("at_desk", at(10, 10, day=d)),    # 10 min absence ends here
+            FakeEvent("away",    at(11, 0,  day=d)),    # next absence — 50 min away
+            FakeEvent("at_desk", at(12, 0,  day=d)),
+        ]
+        absences = _pair_absences(events, d)
+        assert len(absences) == 2
+        assert absences[0]["duration_s"] == 10 * 60
+        assert absences[1]["duration_s"] == 60 * 60
+
 
 # ── _classify_absences ────────────────────────────────────────────────────
 

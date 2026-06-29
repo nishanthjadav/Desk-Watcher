@@ -1,7 +1,7 @@
 """
 _pair_absences and _classify_absences in api.py are the heart of the
 breaks dashboard. They take a flat event list and turn it into
-classified absences (noise / bathroom / short_break / long_break / lunch).
+classified absences (noise / short_break / long_break / lunch).
 
 Tests use a `FakeEvent` to avoid touching the real DB — these functions
 only read `.activity` and `.timestamp`, so a NamedTuple is enough.
@@ -126,14 +126,17 @@ class TestClassifyAbsences:
         out = _classify_absences([a])
         assert out[0]["category"] == "noise"
 
-    def test_bathroom_break(self):
-        # 4 minutes — under the 6-minute bathroom cap.
+    def test_brief_break_is_short_break(self):
+        # 4 minutes — well above the noise floor, well under the 20-min
+        # short_break ceiling. With the bathroom category collapsed, any
+        # break under 20 minutes is a short_break.
         a = _absence(at(10, 0), 4 * 60)
         out = _classify_absences([a])
-        assert out[0]["category"] == "bathroom"
+        assert out[0]["category"] == "short_break"
 
-    def test_short_break(self):
-        # 12 minutes — between bathroom (6m) and short-break ceiling (20m).
+    def test_mid_length_break_is_short_break(self):
+        # 12 minutes — still under the 20-min ceiling. After collapsing
+        # the bathroom category, any break under 20 minutes is a short_break.
         a = _absence(at(10, 0), 12 * 60)
         out = _classify_absences([a])
         assert out[0]["category"] == "short_break"
@@ -194,7 +197,7 @@ class TestPipelineIntegration:
         d = date(2026, 6, 30)
         events = [
             FakeEvent("at_desk",  at(8, 0,  day=d)),
-            FakeEvent("away",     at(9, 30, day=d)),    # bathroom
+            FakeEvent("away",     at(9, 30, day=d)),    # short_break (4 min)
             FakeEvent("at_desk",  at(9, 34, day=d)),
             FakeEvent("away",     at(12, 0, day=d)),    # lunch
             FakeEvent("at_desk",  at(12, 40, day=d)),
@@ -205,4 +208,4 @@ class TestPipelineIntegration:
         ]
         absences = _classify_absences(_pair_absences(events, d))
         cats = [a["category"] for a in absences]
-        assert cats == ["bathroom", "lunch", "short_break", "long_break"]
+        assert cats == ["short_break", "lunch", "short_break", "long_break"]

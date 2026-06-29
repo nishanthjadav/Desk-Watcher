@@ -6,7 +6,7 @@ A background app that uses your laptop camera to track what you're doing at your
 
 - Drink/water sips (cup raised to face)
 - Phone usage (phone in frame + head down, or sustained head-down even when the phone is out of sight)
-- Time away from desk, classified by duration and time of day: bathroom, short break, long break, lunch
+- Time away from desk, classified by duration and time of day: short break, long break, lunch
 - Break frequency, average break length, lunch start/end
 
 ## How it works

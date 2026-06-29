@@ -39,7 +39,7 @@ class TestSummaryEndpoint:
             (_ts(10, 0), "phone"),
             (_ts(10, 10), "at_desk"),    # 10 min on phone
             (_ts(11, 0), "away"),
-            (_ts(11, 4), "at_desk"),     # bathroom
+            (_ts(11, 4), "at_desk"),     # short_break (4 min)
             (_ts(12, 0), "away"),
             (_ts(12, 35), "at_desk"),    # lunch
         ]
@@ -50,7 +50,7 @@ class TestSummaryEndpoint:
         assert data["sip_count"] == 1
         assert data["phone_count"] == 1
         assert data["phone_min"] >= 9   # ~10 min of phone usage
-        assert data["bathroom_count"] == 1
+        assert data["short_break_count"] == 1
         assert data["lunch"] is not None
         assert 30 <= data["lunch"]["duration_min"] <= 40
 
@@ -60,7 +60,7 @@ class TestSummaryEndpoint:
         data = client.get(f"/summary?target_date={TODAY.isoformat()}").json()
         required = {
             "date", "sip_count", "phone_count", "phone_min",
-            "bathroom_count", "short_break_count", "long_break_count",
+            "short_break_count", "long_break_count",
             "break_count", "avg_break_duration_min",
             "lunch", "absences", "total_events",
         }
@@ -165,7 +165,7 @@ class TestProductivityEndpoint:
         data = client.get("/productivity?days=3").json()
         for entry in data:
             required = {
-                "date", "break_count", "bathroom_count",
+                "date", "break_count",
                 "short_break_count", "long_break_count",
                 "lunch_duration_min", "at_desk_min",
             }

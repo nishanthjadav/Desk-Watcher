@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 const API = "http://localhost:8000";
 const POLL_MS = 30_000;
 
-type Category = "bathroom" | "short_break" | "long_break" | "lunch";
+type Category = "short_break" | "long_break" | "lunch";
 
 interface Absence {
   start: string;
@@ -23,7 +23,6 @@ interface Summary {
   sip_count: number;
   phone_count: number;
   phone_min: number;
-  bathroom_count: number;
   short_break_count: number;
   long_break_count: number;
   break_count: number;
@@ -36,7 +35,6 @@ interface Summary {
 interface WeekDay {
   date: string;
   sip_count: number;
-  bathroom_count: number;
   short_break_count: number;
   long_break_count: number;
   break_count: number;
@@ -70,7 +68,6 @@ interface HeatmapDay {
 interface ProductivityDay {
   date: string;
   break_count: number;
-  bathroom_count: number;
   short_break_count: number;
   long_break_count: number;
   lunch_duration_min: number | null;
@@ -96,14 +93,12 @@ const TL_NOW = "#7dd3fc";            // cool blue cursor — pops against warm p
 const TL_SIP = "#f5a623";            // sip pip color
 
 const CATEGORY_LABEL: Record<Category, string> = {
-  bathroom: "Bathroom",
   short_break: "Short break",
   long_break: "Long break",
   lunch: "Lunch",
 };
 
 const CATEGORY_COLOR: Record<Category, string> = {
-  bathroom: "#6b655d",
   short_break: "#b5afa4",
   long_break: "#f5a623",
   lunch: "#e08a0c",

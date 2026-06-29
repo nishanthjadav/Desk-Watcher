@@ -15,8 +15,7 @@ app.add_middleware(
 
 
 NOISE_FLOOR_S = 60          # absences shorter than this are detection glitches, not breaks
-BATHROOM_MAX_S = 6 * 60     # <= 6 min => bathroom
-SHORT_BREAK_MAX_S = 20 * 60 # <= 20 min => short break
+SHORT_BREAK_MAX_S = 20 * 60 # <= 20 min => short break (anything under is a short break)
 LUNCH_MIN_S = 20 * 60       # >= 20 min and in midday window => lunch candidate
 LUNCH_WINDOW = (11, 15)     # [start_hour, end_hour) for lunch detection, LOCAL time
 
@@ -129,8 +128,6 @@ def _classify_absences(absences: list[dict]) -> list[dict]:
             a["category"] = "noise"
         elif i == lunch_idx:
             a["category"] = "lunch"
-        elif d <= BATHROOM_MAX_S:
-            a["category"] = "bathroom"
         elif d <= SHORT_BREAK_MAX_S:
             a["category"] = "short_break"
         else:
@@ -206,12 +203,12 @@ def get_summary(target_date: str | None = None, db: Session = Depends(get_db)):
     absences = _classify_absences(_pair_absences(events, day))
 
     by_cat: dict[str, list[dict]] = {
-        "bathroom": [], "short_break": [], "long_break": [], "lunch": [], "noise": [],
+        "short_break": [], "long_break": [], "lunch": [], "noise": [],
     }
     for a in absences:
         by_cat[a["category"]].append(a)
 
-    real_breaks = by_cat["bathroom"] + by_cat["short_break"] + by_cat["long_break"]
+    real_breaks = by_cat["short_break"] + by_cat["long_break"]
     avg_break_s = (sum(a["duration_s"] for a in real_breaks) / len(real_breaks)) if real_breaks else 0
 
     lunch = by_cat["lunch"][0] if by_cat["lunch"] else None
@@ -229,7 +226,6 @@ def get_summary(target_date: str | None = None, db: Session = Depends(get_db)):
         "sip_count": sip_count,
         "phone_count": phone_count,
         "phone_min": round(phone_seconds / 60, 1),
-        "bathroom_count": len(by_cat["bathroom"]),
         "short_break_count": len(by_cat["short_break"]),
         "long_break_count": len(by_cat["long_break"]),
         "break_count": len(real_breaks),
@@ -304,17 +300,15 @@ def get_weekly_summary(db: Session = Depends(get_db)):
         events = _events_for_day(db, day)
         sip_count = _coalesce_sips(events)
         absences = _classify_absences(_pair_absences(events, day))
-        bathroom = sum(1 for a in absences if a["category"] == "bathroom")
         short_break = sum(1 for a in absences if a["category"] == "short_break")
         long_break = sum(1 for a in absences if a["category"] == "long_break")
         lunch = next((a for a in absences if a["category"] == "lunch"), None)
         result.append({
             "date": day.isoformat(),
             "sip_count": sip_count,
-            "bathroom_count": bathroom,
             "short_break_count": short_break,
             "long_break_count": long_break,
-            "break_count": bathroom + short_break + long_break,
+            "break_count": short_break + long_break,
             "lunch_duration_min": round(lunch["duration_s"] / 60, 1) if lunch else None,
         })
     return result
@@ -331,12 +325,11 @@ def get_productivity(days: int = 90, db: Session = Depends(get_db)):
         day = today - timedelta(days=i)
         events = _events_for_day(db, day)
         absences = _classify_absences(_pair_absences(events, day))
-        bathroom = sum(1 for a in absences if a["category"] == "bathroom")
         short_break = sum(1 for a in absences if a["category"] == "short_break")
         long_break = sum(1 for a in absences if a["category"] == "long_break")
         lunch = next((a for a in absences if a["category"] == "lunch"), None)
 
-      
+
         at_desk_s = 0.0
         for j, e in enumerate(events):
             if e.activity not in ("at_desk", "sipping"):
@@ -351,8 +344,7 @@ def get_productivity(days: int = 90, db: Session = Depends(get_db)):
 
         out.append({
             "date": day.isoformat(),
-            "break_count": bathroom + short_break + long_break,
-            "bathroom_count": bathroom,
+            "break_count": short_break + long_break,
             "short_break_count": short_break,
             "long_break_count": long_break,
             "lunch_duration_min": round(lunch["duration_s"] / 60, 1) if lunch else None,

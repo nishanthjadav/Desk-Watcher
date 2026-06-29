@@ -39,6 +39,7 @@ Hotkeys
     Home / End      jump to first / last frame
     PgUp / PgDn     jump to previous / next labeled-region boundary
     u               undo last label commit
+    r               re-run the auto-labeler (one undo-able op)
     s               save (also happens automatically on every commit)
     q / Esc-Esc     quit
 """
@@ -59,6 +60,22 @@ from pathlib import Path
 # globals, which get filled in before any rendering happens.
 cv2 = None  # type: ignore[assignment]
 np = None   # type: ignore[assignment]
+
+# The auto-labeler reuses the same geometry helpers and rolling-window
+# trackers as the live classifier. Both live in backend/classifier.py;
+# we put that directory on sys.path so the import works regardless of
+# where the script is invoked from.
+_BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+from classifier import (  # noqa: E402  (after sys.path setup)
+    HeadDownTracker,
+    SipTracker,
+    is_head_down,
+    is_sipping,
+    wrists_low_and_close,
+)
 
 
 # ─── Data shapes ────────────────────────────────────────────────────────────
@@ -136,18 +153,39 @@ class Session:
 
 # ─── Load / save ────────────────────────────────────────────────────────────
 
-def load_csv(csv_path: Path) -> list[Frame]:
+def load_csv(csv_path: Path) -> tuple[list[Frame], list[str | None] | None]:
+    """
+    Load a session CSV produced by collect_data.py.
+
+    Returns (frames, inline_labels). `inline_labels` is None when the
+    CSV has no `label` column (older recordings from before the
+    hold-to-label change). When present, it's a parallel list aligned
+    to `frames`, with each entry being the activity label written at
+    record time.
+    """
     frames: list[Frame] = []
+    inline_labels: list[str | None] | None = None
     with open(csv_path, newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
         if header[0] != "timestamp":
             raise SystemExit(f"Unexpected CSV: first column must be 'timestamp', got {header[0]!r}")
+
+        # New format: second column is "label"; landmarks start at index 2.
+        # Old format: second column is the first landmark; no inline labels.
+        has_label_col = len(header) >= 2 and header[1] == "label"
+        landmark_start = 2 if has_label_col else 1
+        if has_label_col:
+            inline_labels = []
+
         for row in reader:
             if not row:
                 continue
             ts = float(row[0])
-            landmarks = [float(v) for v in row[1:]]
+            if has_label_col:
+                lbl = row[1] if row[1] in ACTIVITIES else None
+                inline_labels.append(lbl)  # type: ignore[union-attr]
+            landmarks = [float(v) for v in row[landmark_start:]]
             if len(landmarks) != LANDMARK_COUNT * 3:
                 raise SystemExit(
                     f"Row has {len(landmarks)} landmark values, expected {LANDMARK_COUNT * 3}. "
@@ -156,7 +194,7 @@ def load_csv(csv_path: Path) -> list[Frame]:
             frames.append(Frame(timestamp=ts, landmarks=landmarks))
     if not frames:
         raise SystemExit(f"{csv_path}: no rows.")
-    return frames
+    return frames, inline_labels
 
 
 def load_labels(labels_path: Path, n_frames: int) -> list[str | None]:
@@ -353,6 +391,123 @@ def push_history(session: Session, start: int, end: int) -> None:
     session.history.append((start, end, list(session.labels[start:end])))
 
 
+# ─── Auto-labeling ──────────────────────────────────────────────────────────
+
+# Median-filter window size. A 5-frame median means any label run shorter
+# than ~3 frames (a quarter-second at 12fps) gets absorbed into its
+# neighbors — kills the single-frame flips that come from the wrist
+# briefly entering/leaving the sip zone or the head briefly straightening.
+SMOOTH_WINDOW = 5
+
+
+def _raw_label_for_frame(
+    landmarks: list[float],
+    head_down_sustained: bool,
+    sip_sustained: bool,
+    is_sip_now: bool,
+    is_head_down_now: bool,
+    is_wrists_low_now: bool,
+) -> str:
+    """
+    Mirror of ActivityClassifier.predict's decision tree, but operating on
+    a single frame's pre-computed signals.
+
+    Note: this version does NOT have the YOLO phone-visible signal. The
+    recorded CSV doesn't include phone detections, so we can only catch
+    the "sustained head-down without visible phone" branch and let the
+    user correct anything else manually.
+    """
+    # The phone branches that rely on phone_visible can't fire here —
+    # we don't have phone detections in the CSV. Only the "sustained
+    # head-down with no visible phone" branch applies; it catches the
+    # phone-in-lap case which is the most common false negative for
+    # the simpler heuristics.
+    if head_down_sustained:
+        return "phone"
+
+    # Sipping wants both the current frame's geometry AND the rolling
+    # window — same contract as the live classifier.
+    if is_sip_now and sip_sustained:
+        return "sipping"
+
+    # Wrists-in-lap pose without head-down: very likely phone, but the
+    # signal is weaker. The live classifier requires phone_visible for
+    # this branch; without it we'd over-flag any "hands in lap" moment
+    # as phone. Skip and let the user correct manually.
+    _ = is_wrists_low_now  # intentionally unused without phone_visible
+
+    return "at_desk"
+
+
+def _median_smooth(labels: list[str], window: int = SMOOTH_WINDOW) -> list[str]:
+    """
+    Replace each label with the most common label in a centered window.
+    Length-preserving; the start/end use truncated windows. This is the
+    cheap form of hysteresis — kills sub-window flips without the
+    complexity of state machines.
+    """
+    if window <= 1 or len(labels) == 0:
+        return list(labels)
+    half = window // 2
+    out: list[str] = []
+    for i in range(len(labels)):
+        lo = max(0, i - half)
+        hi = min(len(labels), i + half + 1)
+        bucket = labels[lo:hi]
+        # Most-common label in the window (Python ≥ 3.7 stable iteration).
+        counts: dict[str, int] = {}
+        for lbl in bucket:
+            counts[lbl] = counts.get(lbl, 0) + 1
+        out.append(max(counts, key=counts.get))  # type: ignore[arg-type]
+    return out
+
+
+def auto_label(frames: list[Frame], fps_estimate: float = 12.0) -> list[str]:
+    """
+    Run the rule-based classifier over every frame and return a parallel
+    list of activity labels (one per frame, never None — every frame
+    gets a best-guess label).
+
+    The user then reviews and corrects in the GUI. The point is to turn
+    "label 9000 frames from scratch" into "correct the ~20% the
+    classifier got wrong."
+
+    We instantiate fresh trackers per call so repeat runs are idempotent.
+    Timestamps are taken from each Frame so the trackers' time-based
+    aging works correctly even if the recording wasn't perfectly at fps.
+    """
+    head_down_tracker = HeadDownTracker(window_s=30.0)
+    sip_tracker = SipTracker(window_s=1.5)
+
+    raw: list[str] = []
+    for f in frames:
+        head_down_tracker.add(f.timestamp, is_head_down(f.landmarks))
+        sip_tracker.add(f.timestamp, is_sipping(f.landmarks))
+        raw.append(_raw_label_for_frame(
+            landmarks=f.landmarks,
+            head_down_sustained=head_down_tracker.sustained(),
+            sip_sustained=sip_tracker.sustained(),
+            is_sip_now=is_sipping(f.landmarks),
+            is_head_down_now=is_head_down(f.landmarks),
+            is_wrists_low_now=wrists_low_and_close(f.landmarks),
+        ))
+
+    return _median_smooth(raw, window=SMOOTH_WINDOW)
+
+
+def _apply_auto_labels(session: Session) -> None:
+    """
+    Run the rule-based auto-labeler and slam the results into the session
+    as a SINGLE undo-able operation. If the user fat-fingers the re-run
+    key (`r`), one press of `u` reverts back to whatever they had before.
+    """
+    new_labels = auto_label(session.frames)
+    push_history(session, 0, len(session.labels))
+    for i, lbl in enumerate(new_labels):
+        session.labels[i] = lbl
+    session.dirty = True
+
+
 def commit_range(session: Session, start: int, end: int, activity: str) -> None:
     """Label half-open [start, end) with `activity`. start < end required."""
     if end <= start:
@@ -470,13 +625,56 @@ def main() -> int:
     labels_path = csv_path.with_suffix(".labels.csv")
 
     print(f"Loading {csv_path}...")
-    frames = load_csv(csv_path)
-    labels = load_labels(labels_path, len(frames))
-    n_loaded = sum(1 for lbl in labels if lbl is not None)
-    print(f"  {len(frames)} frames, {n_loaded} pre-labeled")
+    frames, inline_labels = load_csv(csv_path)
+    sidecar_labels = load_labels(labels_path, len(frames))
+    n_sidecar = sum(1 for lbl in sidecar_labels if lbl is not None)
+    n_inline = sum(1 for lbl in (inline_labels or []) if lbl is not None)
+
+    # Priority for initial labels:
+    #   1) Existing sidecar — user has been labeling this before, keep their work.
+    #   2) Inline labels from collect_data.py (the hold-to-label workflow).
+    #   3) Empty — offer auto-label as a starting point.
+    if n_sidecar > 0:
+        labels = sidecar_labels
+        print(f"  {len(frames)} frames, {n_sidecar} pre-labeled from sidecar")
+    elif n_inline > 0:
+        labels = list(inline_labels)  # type: ignore[arg-type]
+        print(f"  {len(frames)} frames, {n_inline} pre-labeled live from collect_data.py")
+    else:
+        labels = sidecar_labels
+        print(f"  {len(frames)} frames, no existing labels")
     backup_once(csv_path)
 
     session = Session(csv_path=csv_path, labels_path=labels_path, frames=frames, labels=labels)
+
+    # If the session still has no labels, offer auto-labeling as a starting
+    # point. Skip the prompt when inline labels were captured at record
+    # time — the user already labeled while recording.
+    if n_sidecar == 0 and n_inline == 0:
+        print(
+            "\nNo existing labels. Auto-label using the rule-based classifier?\n"
+            "  You'll then review and correct in the GUI. (Y/n) ",
+            end="",
+            flush=True,
+        )
+        try:
+            answer = input().strip().lower()
+        except EOFError:
+            answer = "y"
+        if answer in ("", "y", "yes"):
+            _apply_auto_labels(session)
+            save_labels(session)
+            print(f"  Auto-labeled {len(frames)} frames. Saved.")
+        else:
+            print("  Skipping auto-label.")
+    elif n_inline > 0 and n_sidecar == 0:
+        # First time opening a hold-to-label recording — write the inline
+        # labels to the sidecar so future opens see them. This is the
+        # one-time migration from "labels live in the CSV" to "labels live
+        # in the sidecar" (where all label edits accumulate).
+        save_labels(session)
+        print(f"  Sidecar saved → {labels_path}")
+
     wrist_trail: deque = deque(maxlen=6)
 
     # One persistent canvas; subregions are slices into it.
@@ -549,6 +747,12 @@ def main() -> int:
         if key == ord("u"):
             undo(session)
             save_labels(session)
+            continue
+        if key == ord("r"):
+            # Re-run auto-label. Single undo-able op so a fat-finger is recoverable.
+            _apply_auto_labels(session)
+            save_labels(session)
+            print(f"Re-labeled {len(session.frames)} frames via auto-labeler.")
             continue
         if key == KEY_ESC:
             if session.anchor is not None:

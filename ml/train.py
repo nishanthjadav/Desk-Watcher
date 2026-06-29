@@ -1,15 +1,20 @@
 """
 Train an activity classifier on labeled CSV data.
 
-Label sources
--------------
-Labels are read from a SIDECAR file alongside each session CSV:
-    session_001.csv          -- raw pose recording from collect_data.py
-    session_001.labels.csv   -- (row, label) pairs from label_data.py
+Label sources (checked in this order)
+-------------------------------------
+1) SIDECAR `<session>.labels.csv` — produced by label_data.py edits.
+2) INLINE `label` column in the session CSV — written live by
+   collect_data.py's hold-to-label workflow.
 
-The sidecar pattern keeps the raw recording immutable. If a labeling
-pass goes wrong, delete the sidecar and start over — the original
-pose data is never touched.
+Hold-to-label recordings can train directly without an intermediate
+labeler pass; the labeler is only needed when you want to correct
+mislabels or work from older recordings that don't have inline labels.
+
+The `away` class is intentionally absent from this 3-class training:
+when you leave the camera's view MediaPipe doesn't detect a pose, so
+no row gets written. The live watcher (backend/) handles `away` by
+the no-pose-found condition, separately from the trained model.
 
 Featurization (Phase 1)
 -----------------------
@@ -20,7 +25,7 @@ the baseline. The sequence-model replacement (1D-CNN over the raw
 30×99 sequence) comes in a later phase.
 
 Usage:
-    python train.py --data ../data/labeled/ --output ../backend/models/activity_classifier.pkl
+    python train.py --data ../data/sessions/ --output ../backend/models/activity_classifier.pkl
 """
 from __future__ import annotations
 
@@ -74,9 +79,13 @@ def load_sidecar_labels(labels_path: Path, n_frames: int) -> list[str | None]:
 
 def load_labeled_data(data_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     """
-    For each session CSV in `data_dir`, look for a matching .labels.csv,
-    apply a sliding window, and emit (mean+std feature vector, majority
-    label) per window.
+    For each session CSV in `data_dir`, gather labels from:
+      1) the sidecar `.labels.csv` if it exists and has entries (the
+         labeler's edits are the most authoritative source), then
+      2) the inline `label` column written by collect_data.py's
+         hold-to-label workflow.
+    Apply a sliding window over the labeled frames and emit one
+    (mean+std feature vector, majority label) per window.
     """
     X_list, y_list = [], []
 
@@ -91,11 +100,24 @@ def load_labeled_data(data_dir: Path) -> tuple[np.ndarray, np.ndarray]:
             print(f"  {csv_path.name}: no landmark columns, skipping")
             continue
 
+        # Prefer sidecar labels if any exist; otherwise fall back to the
+        # inline `label` column. This lets hold-to-label recordings train
+        # without an intermediate labeler pass.
         labels_path = csv_path.with_suffix(".labels.csv")
         labels = load_sidecar_labels(labels_path, len(df))
+        n_sidecar = sum(1 for lbl in labels if lbl is not None)
+
+        if n_sidecar == 0 and "label" in df.columns:
+            inline = df["label"].tolist()
+            labels = [lbl if lbl in ACTIVITIES else None for lbl in inline]
+            n_used = sum(1 for lbl in labels if lbl is not None)
+            print(f"  {csv_path.name}: using {n_used} inline labels from collect_data.py")
+        elif n_sidecar > 0:
+            print(f"  {csv_path.name}: using {n_sidecar} labels from sidecar")
+
         n_labeled = sum(1 for lbl in labels if lbl is not None)
         if n_labeled == 0:
-            print(f"  {csv_path.name}: no sidecar / no labels, skipping")
+            print(f"  {csv_path.name}: no labels (sidecar or inline), skipping")
             continue
 
         features = df[feature_cols].values

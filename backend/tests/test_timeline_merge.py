@@ -98,7 +98,7 @@ class TestTimelineMerging:
 class TestTimelineAgreesWithBreaksList:
     def test_durations_consistent_between_timeline_and_summary(self, client):
         """
-        For the same seeded day, the bathroom break duration reported on
+        For the same seeded day, the short-break duration reported on
         /summary must match the away segment duration on /timeline. This
         is the exact bug we fixed.
         """

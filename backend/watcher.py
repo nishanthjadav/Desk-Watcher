@@ -6,7 +6,8 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from database import SessionLocal, log_event
-from classifier import ActivityClassifier
+from classifier import ActivityClassifier, HeadDownTracker, is_head_down
+from phone_detector import PhoneDetector
 from config import Config
 
 POSE_CONNECTIONS = [
@@ -18,12 +19,20 @@ POSE_CONNECTIONS = [
 
 config = Config()
 classifier = ActivityClassifier(config.model_path)
+phone_detector = PhoneDetector(config.phone_model_path, conf_threshold=config.phone_conf_threshold)
+head_down_tracker = HeadDownTracker(window_s=config.sustained_head_down_window_s)
 
 frame_buffer: list[tuple[float, list]] = []
 
 last_event: str = "unknown"
 last_event_time: float = time.time()
 in_frame: bool = False
+
+
+_last_phone_visible: bool = False
+_last_phone_bbox: tuple[float, float, float, float] | None = None
+_last_phone_run_ts: float = 0.0
+_frames_since_phone_run: int = 0
 
 
 def extract_landmarks(result) -> list[float] | None:
@@ -44,6 +53,18 @@ def draw_landmarks(frame, result) -> None:
             cv2.line(frame, pts[a], pts[b], (0, 255, 0), 2)
     for x, y in pts:
         cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
+
+
+def draw_phone_bbox(frame, bbox: tuple[float, float, float, float] | None) -> None:
+    if bbox is None:
+        return
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = bbox
+    p1 = (int(x1 * w), int(y1 * h))
+    p2 = (int(x2 * w), int(y2 * h))
+    cv2.rectangle(frame, p1, p2, (0, 165, 255), 2)  # orange box
+    cv2.putText(frame, "phone", (p1[0], max(p1[1] - 6, 12)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
 
 
 def should_log_event(new_event: str) -> bool:
@@ -72,6 +93,25 @@ def build_landmarker() -> mp_vision.PoseLandmarker:
     return mp_vision.PoseLandmarker.create_from_options(options)
 
 
+def maybe_run_phone_detection(frame_bgr) -> None:
+
+    global _last_phone_visible, _last_phone_bbox, _last_phone_run_ts, _frames_since_phone_run
+
+    _frames_since_phone_run += 1
+    if _frames_since_phone_run < config.frames_between_phone_runs:
+
+        if _last_phone_visible and (time.time() - _last_phone_run_ts) > config.phone_visible_staleness_s:
+            _last_phone_visible = False
+            _last_phone_bbox = None
+        return
+
+    _frames_since_phone_run = 0
+    detection = phone_detector.detect(frame_bgr)
+    _last_phone_visible = detection.visible
+    _last_phone_bbox = detection.bbox
+    _last_phone_run_ts = time.time()
+
+
 def main():
     global in_frame, frame_buffer
 
@@ -93,6 +133,8 @@ def main():
             ts_ms = int(time.time() * 1000)
             result = landmarker.detect_for_video(mp_image, ts_ms)
 
+            maybe_run_phone_detection(frame)
+
             landmarks = extract_landmarks(result)
             now = time.time()
 
@@ -107,11 +149,17 @@ def main():
                 in_frame = True
                 frame_buffer.append((now, landmarks))
 
+                head_down_tracker.add(now, is_head_down(landmarks))
+
                 cutoff = now - config.window_size_s
                 frame_buffer = [(t, lm) for t, lm in frame_buffer if t >= cutoff]
 
                 if len(frame_buffer) >= config.min_frames_to_classify:
-                    activity, confidence = classifier.predict(frame_buffer)
+                    activity, confidence = classifier.predict(
+                        frame_buffer,
+                        phone_visible=_last_phone_visible,
+                        sustained_head_down=head_down_tracker.sustained(),
+                    )
                     if should_log_event(activity):
                         log_event(db, activity, confidence=confidence)
                         print(f"[{time.strftime('%H:%M:%S')}] {activity} ({confidence:.2f})")
@@ -119,6 +167,7 @@ def main():
             if config.show_preview:
                 if not config.privacy_mode:
                     draw_landmarks(frame, result)
+                    draw_phone_bbox(frame, _last_phone_bbox if _last_phone_visible else None)
                 cv2.putText(frame, last_event, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 cv2.imshow("Desk Watcher", frame)
 

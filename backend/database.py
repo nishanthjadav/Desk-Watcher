@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from config import Config
@@ -21,14 +21,14 @@ class Event(Base):
     id = Column(Integer, primary_key=True, index=True)
     activity = Column(String, nullable=False)
     confidence = Column(Float, default=1.0)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 Base.metadata.create_all(bind=engine)
 
 
 def log_event(db: Session, activity: str, confidence: float = 1.0) -> Event:
-    event = Event(activity=activity, confidence=confidence, timestamp=datetime.utcnow())
+    event = Event(activity=activity, confidence=confidence, timestamp=datetime.now(timezone.utc))
     db.add(event)
     db.commit()
     db.refresh(event)

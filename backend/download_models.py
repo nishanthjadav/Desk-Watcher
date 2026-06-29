@@ -8,6 +8,10 @@ MODELS = {
         "pose_landmarker/pose_landmarker_lite/float16/latest/"
         "pose_landmarker_lite.task"
     ),
+
+    "models/yolov8n.pt": (
+        "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
+    ),
 }
 
 

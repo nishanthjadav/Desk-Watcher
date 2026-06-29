@@ -20,6 +20,12 @@ SHORT_BREAK_MAX_S = 20 * 60 # <= 20 min => short break
 LUNCH_MIN_S = 20 * 60       # >= 20 min and in midday window => lunch candidate
 LUNCH_WINDOW = (11, 15)     # [start_hour, end_hour) for lunch detection, LOCAL time
 
+# Sips logged within this window of each other count as one drink. A single
+# drink rarely happens as one continuous wrist-near-nose event — you raise
+# the bottle, sip, lower slightly, sip again. Each crossing of the pose
+# threshold is its own DB row, but a human would call it one sip.
+SIP_COALESCE_GAP_S = 90
+
 
 LOCAL_TZ = datetime.now().astimezone().tzinfo
 
@@ -148,8 +154,32 @@ def get_events(target_date: str | None = None, db: Session = Depends(get_db)):
     ]
 
 
-def _activity_seconds(events: list[Event], day: date, activity: str) -> float:
+def _coalesce_sips(events: list[Event], gap_s: int = SIP_COALESCE_GAP_S) -> int:
+    """
+    Count distinct drinks, not raw `sipping` events.
 
+    A single drink (raise bottle → swallow → lower → swallow again) can
+    cross the wrist-near-nose threshold several times in the DB. This
+    folds any sip events within `gap_s` of the previous sip into one
+    drink. Returns the number of distinct drinks.
+
+    Assumes events are already ordered by timestamp (which `_events_for_day`
+    guarantees).
+    """
+    sip_times = [e.timestamp for e in events if e.activity == "sipping"]
+    if not sip_times:
+        return 0
+
+    drinks = 1
+    prev = sip_times[0]
+    for ts in sip_times[1:]:
+        if (ts - prev).total_seconds() > gap_s:
+            drinks += 1
+        prev = ts
+    return drinks
+
+
+def _activity_seconds(events: list[Event], day: date, activity: str) -> float:
     if not events:
         return 0.0
     end_of_day_local = datetime.combine(day, dtime.max, tzinfo=LOCAL_TZ)
@@ -170,7 +200,7 @@ def get_summary(target_date: str | None = None, db: Session = Depends(get_db)):
     day = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else date.today()
     events = _events_for_day(db, day)
 
-    sip_count = sum(1 for e in events if e.activity == "sipping")
+    sip_count = _coalesce_sips(events)
     phone_count = sum(1 for e in events if e.activity == "phone")
     phone_seconds = _activity_seconds(events, day, "phone")
     absences = _classify_absences(_pair_absences(events, day))
@@ -272,7 +302,7 @@ def get_weekly_summary(db: Session = Depends(get_db)):
     for i in range(5):
         day = monday + timedelta(days=i)
         events = _events_for_day(db, day)
-        sip_count = sum(1 for e in events if e.activity == "sipping")
+        sip_count = _coalesce_sips(events)
         absences = _classify_absences(_pair_absences(events, day))
         bathroom = sum(1 for a in absences if a["category"] == "bathroom")
         short_break = sum(1 for a in absences if a["category"] == "short_break")

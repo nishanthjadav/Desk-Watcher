@@ -28,3 +28,9 @@ class Config:
     phone_visible_staleness_s: float = float(os.getenv("PHONE_VISIBLE_STALENESS_S", "1.5"))
  
     sustained_head_down_window_s: float = float(os.getenv("SUSTAINED_HEAD_DOWN_WINDOW_S", "30"))
+
+    # Rolling window for the sustained-sip check. A sip should look like
+    # one for at least this long before we'll classify it — kills the
+    # one-frame false positives from gestures (scratching nose, adjusting
+    # glasses, etc.).
+    sustained_sip_window_s: float = float(os.getenv("SUSTAINED_SIP_WINDOW_S", "1.5"))

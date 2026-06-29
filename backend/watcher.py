@@ -6,7 +6,7 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from database import SessionLocal, log_event
-from classifier import ActivityClassifier, HeadDownTracker, is_head_down
+from classifier import ActivityClassifier, HeadDownTracker, SipTracker, is_head_down, is_sipping
 from phone_detector import PhoneDetector
 from config import Config
 
@@ -21,6 +21,7 @@ config = Config()
 classifier = ActivityClassifier(config.model_path)
 phone_detector = PhoneDetector(config.phone_model_path, conf_threshold=config.phone_conf_threshold)
 head_down_tracker = HeadDownTracker(window_s=config.sustained_head_down_window_s)
+sip_tracker = SipTracker(window_s=config.sustained_sip_window_s)
 
 frame_buffer: list[tuple[float, list]] = []
 
@@ -150,6 +151,7 @@ def main():
                 frame_buffer.append((now, landmarks))
 
                 head_down_tracker.add(now, is_head_down(landmarks))
+                sip_tracker.add(now, is_sipping(landmarks))
 
                 cutoff = now - config.window_size_s
                 frame_buffer = [(t, lm) for t, lm in frame_buffer if t >= cutoff]
@@ -159,6 +161,7 @@ def main():
                         frame_buffer,
                         phone_visible=_last_phone_visible,
                         sustained_head_down=head_down_tracker.sustained(),
+                        sustained_sipping=sip_tracker.sustained(),
                     )
                     if should_log_event(activity):
                         log_event(db, activity, confidence=confidence)

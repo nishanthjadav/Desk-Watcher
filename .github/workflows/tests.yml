@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      # If one Python version breaks, keep going so we see all failures.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install test dependencies
+        # IMPORTANT: only the dev requirements file. The full
+        # requirements.txt pulls torch / opencv / mediapipe / ultralytics
+        # — none of which the unit tests need, all of which take 5+ min
+        # to install. The watcher/phone_detector modules are not imported
+        # from any test.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-dev.txt
+
+      - name: Run pytest
+        # Set TZ to a non-UTC zone so the lunch-window timezone regression
+        # test exercises its real-discrepancy branch instead of skipping.
+        env:
+          TZ: America/New_York
+        run: python -m pytest -v

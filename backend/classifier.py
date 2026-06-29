@@ -7,7 +7,7 @@ from datetime import datetime
 
 ACTIVITIES = ["at_desk", "away", "sipping", "phone"]
 
-.
+
 LM_NOSE = 0
 LM_LEFT_EAR = 7
 LM_RIGHT_EAR = 8
@@ -76,6 +76,7 @@ class ActivityClassifier:
         frame_buffer: list[tuple[float, list]],
         phone_visible: bool = False,
         sustained_head_down: bool = False,
+        sustained_sipping: bool = False,
     ) -> tuple[str, float]:
         latest = frame_buffer[-1][1]
         if phone_visible and is_head_down(latest):
@@ -83,11 +84,17 @@ class ActivityClassifier:
         if phone_visible and wrists_low_and_close(latest):
             return "phone", 0.78
         if not phone_visible and sustained_head_down:
-    
+
             return "phone", 0.55
 
 
-        if is_sipping(latest):
+        # Sipping requires BOTH the current frame to look like a sip AND
+        # the last ~1.5s of frames to have been mostly sipping. The
+        # current-frame check prevents the tracker from continuing to
+        # fire after a real sip ended; the sustained check filters out
+        # single-frame false positives from gestures (scratching nose,
+        # adjusting glasses, brushing hair back).
+        if is_sipping(latest) and sustained_sipping:
             return "sipping", 0.75
 
         # ── Trained classifier ─────────────────────────────────────────────
@@ -131,3 +138,32 @@ class HeadDownTracker:
             return False
         down = sum(1 for _, hd in self._samples if hd)
         return (down / len(self._samples)) >= ratio
+
+
+class SipTracker:
+    """
+    Same rolling-window shape as HeadDownTracker, but tuned for sipping:
+    a much shorter window (~1.5s) and a lower min-samples bar (sipping
+    only needs a few frames to look real). Used by the classifier to
+    require that wrist-near-nose is sustained, not a single-frame flash.
+
+    Kept as a separate class rather than a parameterized generic so call
+    sites read as `sip_tracker.sustained()` / `head_down_tracker.sustained()`
+    — easier to grep, harder to misuse.
+    """
+
+    def __init__(self, window_s: float = 1.5):
+        self.window_s = window_s
+        self._samples: deque[tuple[float, bool]] = deque()
+
+    def add(self, ts: float, sipping: bool) -> None:
+        self._samples.append((ts, sipping))
+        cutoff = ts - self.window_s
+        while self._samples and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+
+    def sustained(self, ratio: float = 0.6, min_samples: int = 5) -> bool:
+        if len(self._samples) < min_samples:
+            return False
+        sip = sum(1 for _, s in self._samples if s)
+        return (sip / len(self._samples)) >= ratio

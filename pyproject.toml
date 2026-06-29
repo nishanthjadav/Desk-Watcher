@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+# Add both `backend/` and `backend/tests/` to the import path so test
+# modules can do `from classifier import ...` and `from test_utils import
+# ...` without sys.path gymnastics. Note: we explicitly DON'T add
+# `backend/tests` as a package (no __init__.py there) — keeping the tests
+# directory as a flat namespace avoids collision with any pre-installed
+# `tests` package on the system Python.
+pythonpath = ["backend", "backend/tests", "ml"]
+testpaths = ["backend/tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

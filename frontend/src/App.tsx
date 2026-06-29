@@ -231,7 +231,22 @@ function DayTimeline({ data }: { data: TimelineResp | null }) {
     totals[s.activity] = (totals[s.activity] ?? 0) + s.duration_s;
   }
   const breakCount = data.segments.filter((s) => s.activity === "away").length;
-  const sipSegments = data.segments.filter((s) => s.activity === "sipping");
+
+  // Coalesce raw sip segments into distinct drinks. Mirrors the backend's
+  // _coalesce_sips so the pip lane and legend total match summary.sip_count
+  // exactly. A single drink in real life crosses the wrist-near-nose
+  // threshold a few times in ~10 seconds; we collapse anything within
+  // 90s into one rendered pip placed at the first segment's start.
+  const SIP_COALESCE_GAP_MS = 90_000;
+  const rawSips = data.segments.filter((s) => s.activity === "sipping");
+  const sipSegments: typeof rawSips = [];
+  for (const seg of rawSips) {
+    const prev = sipSegments[sipSegments.length - 1];
+    if (prev && new Date(seg.start).getTime() - new Date(prev.start).getTime() <= SIP_COALESCE_GAP_MS) {
+      continue; // part of the previous drink
+    }
+    sipSegments.push(seg);
+  }
 
   const todayIso = new Date().toISOString().slice(0, 10);
   const isToday = data.date === todayIso;

@@ -1,0 +1,12 @@
+# Test-only dependencies. Kept minimal so CI installs in seconds rather
+# than minutes. None of the unit tests need torch / mediapipe / opencv /
+# ultralytics — those live in watcher.py / phone_detector.py only, and
+# we don't import those modules from tests.
+#
+# Loose pins so CI doesn't break when a transitive bumps. Production
+# pins live in requirements.txt; these are just enough to run tests.
+pytest>=8.0
+httpx>=0.27        # required by FastAPI's TestClient
+fastapi>=0.110
+sqlalchemy>=2.0
+numpy>=1.26

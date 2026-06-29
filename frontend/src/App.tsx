@@ -21,6 +21,8 @@ interface Lunch {
 interface Summary {
   date: string;
   sip_count: number;
+  phone_count: number;
+  phone_min: number;
   bathroom_count: number;
   short_break_count: number;
   long_break_count: number;
@@ -75,13 +77,23 @@ interface ProductivityDay {
   at_desk_min: number;
 }
 
-const ACTIVITY_COLOR: Record<string, string> = {
-  at_desk: "#e08a0c",
-  sipping: "#f7c04a",
-  stretching: "#8a5106",
-  away: "#33302a",
-  unknown: "#26231f",
-};
+type HeatmapRange = "year" | "6m" | "month";
+
+const HEATMAP_RANGES: { value: HeatmapRange; label: string; days: number; right: string }[] = [
+  { value: "year", label: "Year", days: 365, right: "this year" },
+  { value: "6m", label: "6m", days: 26 * 7, right: "last 6 months" },
+  { value: "month", label: "Month", days: 31, right: "this month" },
+];
+
+// Timeline palette — deliberately distinct from the heatmap convention.
+// The timeline tells a "where were the gaps in your workday" story, so
+// at-desk is a muted canvas and breaks read as neutral notches cut into it.
+const TL_AT_DESK = "#7a4a08";        // muted amber — the workday baseline
+const TL_PHONE = "#a04020";          // rust — anti-productivity, reads as a warning band
+const TL_BREAK = "#4a4640";          // neutral slate — break notch
+const TL_BG = "#1a1815";             // unrecorded portion of the visible window
+const TL_NOW = "#7dd3fc";            // cool blue cursor — pops against warm palette
+const TL_SIP = "#f5a623";            // sip pip color
 
 const CATEGORY_LABEL: Record<Category, string> = {
   bathroom: "Bathroom",
@@ -214,15 +226,27 @@ function DayTimeline({ data }: { data: TimelineResp | null }) {
 
   // Per-activity totals across all segments (not clipped to window — these
   // are summary numbers, useful even if you started before 8a).
-  const totals: Record<string, number> = { at_desk: 0, away: 0, sipping: 0, stretching: 0 };
+  const totals: Record<string, number> = { at_desk: 0, away: 0, sipping: 0, phone: 0 };
   for (const s of data.segments) {
     totals[s.activity] = (totals[s.activity] ?? 0) + s.duration_s;
   }
+  const breakCount = data.segments.filter((s) => s.activity === "away").length;
+  const sipSegments = data.segments.filter((s) => s.activity === "sipping");
 
   const todayIso = new Date().toISOString().slice(0, 10);
   const isToday = data.date === todayIso;
   const nowMs = Date.now();
   const nowPct = isToday && nowMs >= windowStart && nowMs <= windowEnd ? msToPct(nowMs) : null;
+
+  // Map a segment to its rendered band color. Sipping reads as "still at
+  // desk" on the main bar (the sip pip lane below carries the count).
+  // Phone is full-height — it's a distinct state, not a modifier.
+  const bandColor = (activity: string): string | null => {
+    if (activity === "at_desk" || activity === "sipping") return TL_AT_DESK;
+    if (activity === "phone") return TL_PHONE;
+    if (activity === "away") return TL_BREAK;
+    return null;
+  };
 
   return (
     <div className="px-4 py-4">
@@ -233,39 +257,81 @@ function DayTimeline({ data }: { data: TimelineResp | null }) {
         <span className="tabular">
           <span className="text-ink-300">{fmtDuration(totals.at_desk / 60)}</span> at desk
           <span className="text-ink-500 mx-2">·</span>
+          <span className="text-ink-300">{breakCount}</span> break{breakCount === 1 ? "" : "s"}{" "}
+          <span className="text-ink-500">·</span>{" "}
           <span className="text-ink-300">{fmtDuration(totals.away / 60)}</span> away
         </span>
       </div>
 
-      <div className="relative h-8 bg-ink-850 border border-ink-700 overflow-hidden">
+      {/* Main bar */}
+      <div
+        className="relative h-9 border border-ink-700 overflow-hidden"
+        style={{ backgroundColor: TL_BG }}
+      >
+        {/* Hour gridlines (behind segments) */}
+        {ticks.slice(1, -1).map((h) => (
+          <div
+            key={`grid-${h}`}
+            className="absolute top-0 bottom-0 w-px"
+            style={{ left: `${hourToPct(h)}%`, backgroundColor: "#26231f" }}
+          />
+        ))}
+
         {data.segments.map((s, i) => {
           const start = new Date(s.start).getTime();
           const end = new Date(s.end).getTime();
-          // Clip the segment to the visible window so nothing renders past 4p.
           const clippedStart = Math.max(start, windowStart);
           const clippedEnd = Math.min(end, windowEnd);
           if (clippedEnd <= clippedStart) return null;
+          const color = bandColor(s.activity);
+          if (!color) return null;
           const left = msToPct(clippedStart);
           const width = msToPct(clippedEnd) - left;
-          const color = ACTIVITY_COLOR[s.activity] ?? ACTIVITY_COLOR.unknown;
+          const isBreak = s.activity === "away";
           return (
             <div
               key={i}
-              className="absolute top-0 bottom-0"
-              style={{ left: `${left}%`, width: `${Math.max(width, 0.08)}%`, backgroundColor: color }}
+              className="absolute"
+              style={{
+                left: `${left}%`,
+                width: `${Math.max(width, 0.08)}%`,
+                // Notch breaks inward by 4px top/bottom so they read as
+                // "cuts" in the work bar rather than equal-weight bands.
+                top: isBreak ? 4 : 0,
+                bottom: isBreak ? 4 : 0,
+                backgroundColor: color,
+              }}
               title={`${s.activity} · ${fmtClock(s.start)}–${fmtClock(s.end)} · ${fmtDuration(s.duration_s / 60)}`}
             />
           );
         })}
+
         {nowPct != null && (
           <div
-            className="absolute top-0 bottom-0 w-px bg-amber-200"
-            style={{ left: `${nowPct}%` }}
+            className="absolute top-0 bottom-0"
+            style={{ left: `calc(${nowPct}% - 1px)`, width: 2, backgroundColor: TL_NOW }}
             title="Now"
           />
         )}
       </div>
 
+      {/* Sip pip lane — one tick per sip event so they're countable. */}
+      <div className="relative h-3 mt-1">
+        {sipSegments.map((s, i) => {
+          const t = new Date(s.start).getTime();
+          if (t < windowStart || t > windowEnd) return null;
+          return (
+            <div
+              key={i}
+              className="absolute top-0 bottom-0 w-px"
+              style={{ left: `${msToPct(t)}%`, backgroundColor: TL_SIP }}
+              title={`sip · ${fmtClock(s.start)}`}
+            />
+          );
+        })}
+      </div>
+
+      {/* Hour ruler */}
       <div className="relative h-4 mt-1 text-2xs text-ink-400 tabular">
         {ticks.map((h) => (
           <span
@@ -277,24 +343,41 @@ function DayTimeline({ data }: { data: TimelineResp | null }) {
           </span>
         ))}
       </div>
-      <div className="text-center text-2xs text-ink-500 uppercase tracking-[0.18em] mt-2">
-        Time of day
-      </div>
 
+      {/* Legend — collapsed to the four states that actually carry meaning. */}
       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-2xs text-ink-300">
-        {(["at_desk", "sipping", "stretching", "away"] as const).map((a) => (
-          <span key={a} className="inline-flex items-center gap-1.5">
-            <span className="w-2 h-2" style={{ backgroundColor: ACTIVITY_COLOR[a] }} />
-            <span className="capitalize">{a.replace("_", " ")}</span>
-            <span className="text-ink-500 tabular">{fmtDuration((totals[a] ?? 0) / 60)}</span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-3 h-2" style={{ backgroundColor: TL_AT_DESK }} />
+          <span>At desk</span>
+          <span className="text-ink-500 tabular">{fmtDuration((totals.at_desk + totals.sipping) / 60)}</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-3 h-1" style={{ backgroundColor: TL_BREAK }} />
+          <span>Break</span>
+          <span className="text-ink-500 tabular">{fmtDuration(totals.away / 60)}</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-3 h-2" style={{ backgroundColor: TL_PHONE }} />
+          <span>On phone</span>
+          <span className="text-ink-500 tabular">{fmtDuration(totals.phone / 60)}</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-px h-3" style={{ backgroundColor: TL_SIP }} />
+          <span>Sip</span>
+          <span className="text-ink-500 tabular">{sipSegments.length}</span>
+        </span>
+        {nowPct != null && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-px h-3" style={{ backgroundColor: TL_NOW }} />
+            <span>Now</span>
           </span>
-        ))}
+        )}
       </div>
     </div>
   );
 }
 
-function ProductivityHeatmap({ data }: { data: ProductivityDay[] | null }) {
+function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; range: HeatmapRange }) {
   if (!data) return <div className="px-4 py-6 text-ink-400 text-sm">Loading…</div>;
 
   // Filter to "tracked" days only (>= 30 min of at-desk time) for the average
@@ -320,8 +403,6 @@ function ProductivityHeatmap({ data }: { data: ProductivityDay[] | null }) {
     return Math.min(ramp.length - 1, Math.floor(t * ramp.length));
   };
 
-  // Build a calendar-year grid: Jan 1 → Dec 31 of the current year, so
-  // January is always on the far left and December on the far right.
   const byDate: Record<string, ProductivityDay> = {};
   for (const d of data) byDate[d.date] = d;
 
@@ -332,22 +413,41 @@ function ProductivityHeatmap({ data }: { data: ProductivityDay[] | null }) {
     return `${y}-${m}-${day}`;
   };
 
-  const year = new Date().getFullYear();
-  const yearStart = new Date(year, 0, 1);
-  const yearEnd = new Date(year, 11, 31);
+  // Decide the visible window based on `range`. All ranges render as
+  // columns-of-weeks so the markup stays the same.
+  const today = new Date();
+  let rangeStart: Date;
+  let rangeEnd: Date;
+  let showMonthLabels = true;
 
-  // Align grid start to the Sunday on or before Jan 1 (so each column is
-  // a full Sun..Sat week, with leading non-year days rendered as blanks).
-  const gridStart = new Date(yearStart);
+  if (range === "year") {
+    rangeStart = new Date(today.getFullYear(), 0, 1);
+    rangeEnd = new Date(today.getFullYear(), 11, 31);
+  } else if (range === "6m") {
+    // Rolling 26 weeks ending this week's Saturday.
+    rangeEnd = new Date(today);
+    rangeEnd.setDate(rangeEnd.getDate() + (6 - rangeEnd.getDay()));
+    rangeStart = new Date(rangeEnd);
+    rangeStart.setDate(rangeStart.getDate() - (26 * 7 - 1));
+  } else {
+    // Current calendar month.
+    rangeStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    rangeEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    showMonthLabels = false;
+  }
+
+  // Align grid start to the Sunday on or before rangeStart so each column is
+  // a full Sun..Sat week, with out-of-range days rendered as blanks.
+  const gridStart = new Date(rangeStart);
   gridStart.setDate(gridStart.getDate() - gridStart.getDay());
 
   const weeks: { date: string | null; day: ProductivityDay | null }[][] = [];
   const cursor = new Date(gridStart);
-  while (cursor <= yearEnd) {
+  while (cursor <= rangeEnd) {
     const week: { date: string | null; day: ProductivityDay | null }[] = [];
     for (let dow = 0; dow < 7; dow++) {
-      const inYear = cursor >= yearStart && cursor <= yearEnd;
-      const iso = inYear ? localIso(cursor) : null;
+      const inRange = cursor >= rangeStart && cursor <= rangeEnd;
+      const iso = inRange ? localIso(cursor) : null;
       const day = iso ? (byDate[iso] ?? null) : null;
       week.push({ date: iso, day });
       cursor.setDate(cursor.getDate() + 1);
@@ -356,16 +456,23 @@ function ProductivityHeatmap({ data }: { data: ProductivityDay[] | null }) {
   }
 
   // Month labels: anchor each month to the column containing its 1st day.
+  // Skip months whose 1st falls outside the visible range.
   const monthLabels: { col: number; label: string }[] = [];
-  for (let m = 0; m < 12; m++) {
-    const firstOfMonth = new Date(year, m, 1);
-    const firstIso = localIso(firstOfMonth);
-    const col = weeks.findIndex((w) => w.some((c) => c.date === firstIso));
-    if (col === -1) continue;
-    monthLabels.push({
-      col,
-      label: firstOfMonth.toLocaleDateString([], { month: "short" }),
-    });
+  if (showMonthLabels) {
+    const startMonth = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+    const endMonth = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
+    const m = new Date(startMonth);
+    while (m <= endMonth) {
+      const firstIso = localIso(m);
+      const col = weeks.findIndex((w) => w.some((c) => c.date === firstIso));
+      if (col !== -1) {
+        monthLabels.push({
+          col,
+          label: m.toLocaleDateString([], { month: "short" }),
+        });
+      }
+      m.setMonth(m.getMonth() + 1);
+    }
   }
 
   const dowLabels = ["", "Mon", "", "Wed", "", "Fri", ""];
@@ -386,26 +493,33 @@ function ProductivityHeatmap({ data }: { data: ProductivityDay[] | null }) {
         </div>
 
         {/* Grid: month strip on top, weeks × days below — same column tracks
-            so labels align with their columns no matter the panel width. */}
+            so labels align with their columns no matter the panel width.
+            Cap column width so few-column views (month, 6m) don't stretch
+            cells into giant squares that blow up the panel height. */}
         <div
           className="flex-1 grid gap-[2px]"
-          style={{ gridTemplateColumns: `repeat(${weeks.length}, minmax(0, 1fr))` }}
+          style={{
+            gridTemplateColumns: `repeat(${weeks.length}, minmax(0, 1fr))`,
+            maxWidth: `${weeks.length * 16}px`,
+          }}
         >
-          {/* Month strip spans all columns */}
-          <div
-            className="relative h-4 mb-1 text-2xs text-ink-400"
-            style={{ gridColumn: `1 / span ${weeks.length}` }}
-          >
-            {monthLabels.map((m) => (
-              <span
-                key={`${m.col}-${m.label}`}
-                className="absolute"
-                style={{ left: `${(m.col / weeks.length) * 100}%` }}
-              >
-                {m.label}
-              </span>
-            ))}
-          </div>
+          {/* Month strip spans all columns (only when there's >1 month) */}
+          {showMonthLabels && (
+            <div
+              className="relative h-4 mb-1 text-2xs text-ink-400"
+              style={{ gridColumn: `1 / span ${weeks.length}` }}
+            >
+              {monthLabels.map((m) => (
+                <span
+                  key={`${m.col}-${m.label}`}
+                  className="absolute"
+                  style={{ left: `${(m.col / weeks.length) * 100}%` }}
+                >
+                  {m.label}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* One column per week, each is a 7-row grid */}
           {weeks.map((week, wi) => (
@@ -602,15 +716,21 @@ function BreaksList({ absences }: { absences: Absence[] }) {
 }
 
 export default function App() {
+  const [heatmapRange, setHeatmapRange] = useState<HeatmapRange>("year");
+  const heatmapCfg = HEATMAP_RANGES.find((r) => r.value === heatmapRange)!;
+
   const summary = useFetch<Summary>(`${API}/summary`, POLL_MS);
   const weekly = useFetch<WeekDay[]>(`${API}/weekly`, POLL_MS);
   const timeline = useFetch<TimelineResp>(`${API}/timeline`, POLL_MS);
-  const productivity = useFetch<ProductivityDay[]>(`${API}/productivity?days=365`, POLL_MS);
+  const productivity = useFetch<ProductivityDay[]>(`${API}/productivity?days=${heatmapCfg.days}`, POLL_MS);
 
   const atDeskHours = useMemo(() => {
     if (!timeline) return null;
+    // Phone is deliberately NOT counted toward at-desk time — it's the
+    // inverse signal (disengagement). Mirrors the backend's `/productivity`
+    // at_desk_min calculation.
     const s = timeline.segments
-      .filter((seg) => seg.activity === "at_desk" || seg.activity === "sipping" || seg.activity === "stretching")
+      .filter((seg) => seg.activity === "at_desk" || seg.activity === "sipping")
       .reduce((acc, seg) => acc + seg.duration_s, 0);
     return s / 3600;
   }, [timeline]);
@@ -647,9 +767,9 @@ export default function App() {
               sub="hydration"
             />
             <Metric
-              label="Bathroom"
-              value={String(summary?.bathroom_count ?? "—")}
-              sub="< 6 min"
+              label="On phone"
+              value={summary?.phone_min != null ? fmtDuration(summary.phone_min) : "—"}
+              sub={summary?.phone_count != null ? `${summary.phone_count} session${summary.phone_count === 1 ? "" : "s"}` : "—"}
             />
             <Metric
               label="Short breaks"
@@ -671,10 +791,35 @@ export default function App() {
 
         {/* Two-column row */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <Panel title="Productivity" right="last 12 months" className="lg:col-span-2">
-            <ProductivityHeatmap data={productivity} />
+          <Panel
+            title="Productivity"
+            right={
+              <div className="inline-flex border border-ink-700">
+                {HEATMAP_RANGES.map((r) => {
+                  const active = r.value === heatmapRange;
+                  return (
+                    <button
+                      key={r.value}
+                      type="button"
+                      onClick={() => setHeatmapRange(r.value)}
+                      className={
+                        "px-2 py-0.5 text-2xs uppercase tracking-[0.16em] tabular border-r border-ink-700 last:border-r-0 transition-colors " +
+                        (active
+                          ? "bg-amber-600 text-ink-950"
+                          : "text-ink-300 hover:text-ink-100 hover:bg-ink-800")
+                      }
+                    >
+                      {r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            }
+            className="lg:col-span-2"
+          >
+            <ProductivityHeatmap data={productivity} range={heatmapRange} />
           </Panel>
-          <Panel title="Lunch by day" right="last 7 days">
+          <Panel title="Lunch by day" right="this week">
             <LunchChart data={weekly} />
           </Panel>
         </div>

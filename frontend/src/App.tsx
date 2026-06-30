@@ -1,88 +1,46 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { Panel } from "./components/Panel";
+import { PinPicker, TileGrid, usePinControls } from "./components/TileGrid";
+import {
+  WPM_RANGES,
+  WpmChart,
+  type WpmRange,
+  YAWN_RANGES,
+  YawnHeatmap,
+  type YawnRange,
+} from "./components/Tier2Panels";
+import type {
+  Absence,
+  Category,
+  Lunch,
+  ProductivityDay,
+  Segment,
+  Summary,
+  TimelineResp,
+} from "./types";
+
 const API = "http://localhost:8000";
 const POLL_MS = 30_000;
-
-type Category = "short_break" | "long_break" | "lunch";
-
-interface Absence {
-  start: string;
-  end: string;
-  duration_min: number;
-  category: Category;
-}
-
-interface Lunch {
-  start: string;
-  end: string;
-  duration_min: number;
-}
-
-interface Summary {
-  date: string;
-  sip_count: number;
-  phone_count: number;
-  phone_min: number;
-  phone_avg_session_min: number;
-  short_break_count: number;
-  long_break_count: number;
-  break_count: number;
-  avg_break_duration_min: number;
-  lunch: Lunch | null;
-  absences: Absence[];
-  total_events: number;
-}
-
-interface WeekDay {
-  date: string;
-  sip_count: number;
-  short_break_count: number;
-  long_break_count: number;
-  break_count: number;
-  lunch_duration_min: number | null;
-}
-
-interface Segment {
-  activity: string;
-  start: string;
-  end: string;
-  duration_s: number;
-}
-
-interface TimelineResp {
-  date: string;
-  segments: Segment[];
-}
-
-interface HourCell {
-  hour: number;
-  at_desk_s: number;
-  away_s: number;
-  sip_count: number;
-}
-
-interface HeatmapDay {
-  date: string;
-  hours: HourCell[];
-}
-
-interface ProductivityDay {
-  date: string;
-  break_count: number;
-  short_break_count: number;
-  long_break_count: number;
-  lunch_duration_min: number | null;
-  at_desk_min: number;
-  break_total_min: number;   // sum of all real (non-noise) absence durations
-  phone_min: number;
-}
 
 type HeatmapRange = "year" | "6m" | "month";
 
 const HEATMAP_RANGES: { value: HeatmapRange; label: string; days: number; right: string }[] = [
-  { value: "year", label: "Year", days: 365, right: "this year" },
-  { value: "6m", label: "6m", days: 26 * 7, right: "last 6 months" },
   { value: "month", label: "Month", days: 31, right: "this month" },
+  { value: "6m", label: "6m", days: 26 * 7, right: "last 6 months" },
+  { value: "year", label: "Year", days: 365, right: "this year" },
+];
+
+// Lunch chart ranges. "week" shows the last 7 days as one bar per day,
+// "month" shows the current calendar month as one bar per day, and "6m"
+// aggregates to weekly averages (26 bars) since 180 daily bars would be
+// unreadable in the panel's width.
+type LunchRange = "week" | "month" | "6m";
+
+const LUNCH_RANGES: { value: LunchRange; label: string; days: number; right: string }[] = [
+  { value: "week", label: "Week", days: 7, right: "this week" },
+  { value: "month", label: "Month", days: 31, right: "this month" },
+  { value: "6m", label: "6m", days: 26 * 7, right: "last 6 months" },
 ];
 
 // Timeline palette — deliberately distinct from the heatmap convention.
@@ -167,36 +125,6 @@ function useFetch<T>(url: string, pollMs?: number) {
     return () => { cancelled = true; };
   }, [url, pollMs]);
   return data;
-}
-
-function Panel({ title, right, children, className = "" }: {
-  title?: string; right?: React.ReactNode; children: React.ReactNode; className?: string;
-}) {
-  return (
-    // flex column with h-full lets children that want to stretch use
-    // `h-full` on their root and actually fill the remaining height
-    // (e.g. the productivity heatmap centers itself vertically inside
-    // the panel when the sibling panel makes the row taller).
-    <section className={`border border-ink-700 bg-ink-900 flex flex-col ${className}`}>
-      {title && (
-        <header className="flex items-center justify-between px-4 py-2 border-b border-ink-700 shrink-0">
-          <h2 className="text-2xs uppercase tracking-[0.18em] text-ink-300 font-medium">{title}</h2>
-          {right && <div className="text-2xs text-ink-400 tabular">{right}</div>}
-        </header>
-      )}
-      {children}
-    </section>
-  );
-}
-
-function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="px-4 py-3 border-r border-ink-700 last:border-r-0 flex-1">
-      <div className="text-2xs uppercase tracking-[0.16em] text-ink-400">{label}</div>
-      <div className="mt-1 font-mono text-2xl text-ink-100 tabular">{value}</div>
-      {sub && <div className="text-2xs text-ink-400 mt-0.5">{sub}</div>}
-    </div>
-  );
 }
 
 function CategoryBadge({ category }: { category: Category }) {
@@ -657,21 +585,194 @@ function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; 
   );
 }
 
-function LunchChart({ data }: { data: WeekDay[] | null }) {
-  if (!data || data.length === 0) {
-    return <div className="px-4 py-6 text-ink-400 text-sm">No weekly data.</div>;
+// A single bar in the LunchChart — the data is the same shape regardless
+// of whether it's a per-day bar or a weekly-average bar. `label` is the
+// short label under the bar; `tooltip` is the hover string.
+interface LunchBar {
+  key: string;
+  label: string;
+  tooltip: string;
+  lunch_min: number | null;
+  isToday: boolean;
+}
+
+// Local-date YYYY-MM-DD for `Date`. Avoids the timezone wobble that
+// toISOString() can introduce when crossing midnight in some zones.
+function localIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function buildLunchBars(data: ProductivityDay[], range: LunchRange): LunchBar[] {
+  const todayIso = localIso(new Date());
+  const byDate: Record<string, ProductivityDay> = {};
+  for (const d of data) byDate[d.date] = d;
+
+  if (range === "week") {
+    // Fixed Mon–Fri row, in that order. Sat/Sun deliberately omitted —
+    // the user asked for "Monday far left fixed, Friday far right fixed."
+    // We pick whichever Mon–Fri belongs to the current week (where the
+    // week contains today). Days the watcher didn't run still get a
+    // bar slot, just with no value.
+    const now = new Date();
+    // Find this week's Monday. JS getDay(): 0=Sun..6=Sat → Monday is
+    // (date - dow + 1) when dow > 0; for Sunday we go back 6 days.
+    const dow = now.getDay();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - (dow === 0 ? 6 : dow - 1));
+    const weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    return weekdayNames.map((wd, i) => {
+      const date = new Date(monday);
+      date.setDate(monday.getDate() + i);
+      const iso = localIso(date);
+      const day = byDate[iso];
+      return {
+        key: iso,
+        label: wd,
+        tooltip:
+          day?.lunch_duration_min != null
+            ? `${iso} (${wd}) · lunch ${Math.round(day.lunch_duration_min)}m`
+            : `${iso} (${wd}) · no lunch detected`,
+        lunch_min: day?.lunch_duration_min ?? null,
+        isToday: iso === todayIso,
+      };
+    });
   }
 
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const durations = data.map((d) => d.lunch_duration_min).filter((v): v is number => v != null);
+  if (range === "month") {
+    // One bar per calendar week within the current month. The label is
+    // the date range that week covers, clamped to the month boundaries
+    // — e.g. for August: "Aug 1–4", "5–11", "12–18", "19–25", "26–31".
+    // Weeks run Mon–Sun; week N is the week containing the day (N*7 - 6)
+    // counting from the 1st. Simpler: walk the month day-by-day and
+    // group into Mon-anchored buckets.
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const lastDay = new Date(year, month + 1, 0).getDate();
+
+    // Build the buckets: each entry is an array of ISO dates in that week.
+    const buckets: { startDay: number; endDay: number; isos: string[] }[] = [];
+    let currentBucket: { startDay: number; endDay: number; isos: string[] } | null = null;
+    for (let d = 1; d <= lastDay; d++) {
+      const dt = new Date(year, month, d);
+      const iso = localIso(dt);
+      const isMonday = dt.getDay() === 1;
+      if (currentBucket === null || isMonday) {
+        // Close previous bucket (its endDay is the previous d).
+        if (currentBucket !== null) buckets.push(currentBucket);
+        currentBucket = { startDay: d, endDay: d, isos: [iso] };
+      } else {
+        currentBucket.endDay = d;
+        currentBucket.isos.push(iso);
+      }
+    }
+    if (currentBucket !== null) buckets.push(currentBucket);
+
+    const monthShort = now.toLocaleDateString([], { month: "short" });
+    return buckets.map((b, i) => {
+      const lunches: number[] = [];
+      for (const iso of b.isos) {
+        const day = byDate[iso];
+        if (day?.lunch_duration_min != null) lunches.push(day.lunch_duration_min);
+      }
+      const avg =
+        lunches.length > 0 ? lunches.reduce((s, v) => s + v, 0) / lunches.length : null;
+      // Label: "Week N · Aug 1–4". Keeping both the ordinal and the
+      // date range so the user sees BOTH abstractions the user asked for
+      // ("week 1, week 2, …") AND the concrete dates that week covers.
+      const dateRange =
+        b.startDay === b.endDay
+          ? `${monthShort} ${b.startDay}`
+          : `${monthShort} ${b.startDay}–${b.endDay}`;
+      const containsToday =
+        now.getMonth() === month && b.startDay <= now.getDate() && now.getDate() <= b.endDay;
+      return {
+        key: `wk${i}`,
+        label: dateRange,
+        tooltip:
+          avg != null
+            ? `Week ${i + 1} (${dateRange}) · avg lunch ${Math.round(avg)}m (${lunches.length} day${lunches.length === 1 ? "" : "s"})`
+            : `Week ${i + 1} (${dateRange}) · no lunches detected`,
+        lunch_min: avg,
+        isToday: containsToday,
+      };
+    });
+  }
+
+  // 6m — one bar per calendar month, ending with the current month.
+  // Label: short month name (Jan, Feb, ...). Bucket = average detected
+  // lunch across the month's days.
+  const now = new Date();
+  const months: { year: number; month: number; label: string }[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      year: dt.getFullYear(),
+      month: dt.getMonth(),
+      label: dt.toLocaleDateString([], { month: "short" }),
+    });
+  }
+  return months.map((m) => {
+    const lastDay = new Date(m.year, m.month + 1, 0).getDate();
+    const lunches: number[] = [];
+    for (let d = 1; d <= lastDay; d++) {
+      const iso = localIso(new Date(m.year, m.month, d));
+      const day = byDate[iso];
+      if (day?.lunch_duration_min != null) lunches.push(day.lunch_duration_min);
+    }
+    const avg =
+      lunches.length > 0 ? lunches.reduce((s, v) => s + v, 0) / lunches.length : null;
+    const isCurrentMonth = m.year === now.getFullYear() && m.month === now.getMonth();
+    return {
+      key: `${m.year}-${m.month}`,
+      label: m.label,
+      tooltip:
+        avg != null
+          ? `${m.label} ${m.year} · avg lunch ${Math.round(avg)}m (${lunches.length} day${lunches.length === 1 ? "" : "s"})`
+          : `${m.label} ${m.year} · no lunches detected`,
+      lunch_min: avg,
+      isToday: isCurrentMonth,
+    };
+  });
+}
+
+function LunchChart({ data, range }: { data: ProductivityDay[] | null; range: LunchRange }) {
+  if (!data || data.length === 0) {
+    return <div className="px-4 py-6 text-ink-400 text-sm">No lunch data yet.</div>;
+  }
+
+  const bars = buildLunchBars(data, range);
+  const durations = bars.map((b) => b.lunch_min).filter((v): v is number => v != null);
   const hasAny = durations.length > 0;
-  const avg = hasAny ? durations.reduce((s, v) => s + v, 0) / durations.length : 0;
-  const max = Math.max(60, ...durations); // give the axis at least a 60-min ceiling
+  if (!hasAny) {
+    return (
+      <div className="px-4 py-6 text-ink-400 text-sm">
+        No lunches detected in this range.
+      </div>
+    );
+  }
+
+  const avg = durations.reduce((s, v) => s + v, 0) / durations.length;
+  const max = Math.max(60, ...durations); // axis ceiling at least 60m
   const niceMax = Math.ceil(max / 15) * 15;
   const ticks = [0, niceMax / 2, niceMax];
 
+  // Caption above the chart adapts to the range. The "avg over N
+  // days/weeks/months" suffix tells the user what the dashed line means.
+  const unitLabel = range === "week" ? "day" : range === "month" ? "week" : "month";
+  const caption =
+    range === "week"
+      ? "Lunch duration per day this week"
+      : range === "month"
+        ? "Average lunch per week this month"
+        : "Average lunch per month — last 6 months";
+
   return (
     <div className="px-4 py-4">
+
 
       <div className="flex gap-2 h-36">
         {/* Y axis */}
@@ -701,46 +802,39 @@ function LunchChart({ data }: { data: WeekDay[] | null }) {
             />
           ))}
 
-          {hasAny && (
-            <div
-              className="absolute left-0 right-0 border-t border-dashed border-amber-400/60"
-              style={{ top: `${100 - (avg / niceMax) * 100}%` }}
-              title={`Avg ${fmtDuration(avg)}`}
-            >
-              <span className="absolute -top-3.5 right-1 text-2xs text-amber-400 tabular bg-ink-900 px-1">
-                avg {Math.round(avg)}m
-              </span>
-            </div>
-          )}
+          <div
+            className="absolute left-0 right-0 border-t border-dashed border-amber-400/60"
+            style={{ top: `${100 - (avg / niceMax) * 100}%` }}
+            title={`Avg ${fmtDuration(avg)}`}
+          >
+            <span className="absolute -top-3.5 right-1 text-2xs text-amber-400 tabular bg-ink-900 px-1">
+              avg {Math.round(avg)}m
+            </span>
+          </div>
 
           {/* Bars only — each column fills the chart vertically, bar grows
-              from the bottom to its scaled height. */}
-          <div className="absolute inset-0 flex items-end gap-2 px-1">
-            {data.map((d) => {
-              const v = d.lunch_duration_min;
-              const isToday = d.date === todayIso;
-              const h = v != null ? (v / niceMax) * 100 : 0;
+              from the bottom to its scaled height. All ranges produce
+              ≤6 bars, so a comfortable gap and per-bar value labels
+              stay readable. */}
+          <div className="absolute inset-0 flex items-end px-1 gap-2">
+            {bars.map((b) => {
+              const h = b.lunch_min != null ? (b.lunch_min / niceMax) * 100 : 0;
+              const showValue = b.lunch_min != null;
               return (
-                <div key={d.date} className="flex-1 relative h-full flex items-end">
-                  {v != null && (
-                    <div
-                      className="absolute -top-4 left-0 right-0 text-center text-2xs text-ink-200 tabular"
-                    >
-                      {Math.round(v)}
+                <div key={b.key} className="flex-1 relative h-full flex items-end">
+                  {showValue && (
+                    <div className="absolute -top-4 left-0 right-0 text-center text-2xs text-ink-200 tabular">
+                      {Math.round(b.lunch_min!)}
                     </div>
                   )}
                   <div
                     className="w-full"
                     style={{
                       height: `${h}%`,
-                      minHeight: v != null ? 2 : 0,
-                      backgroundColor: isToday ? "#f5a623" : "#b86d07",
+                      minHeight: b.lunch_min != null ? 2 : 0,
+                      backgroundColor: b.isToday ? "#f5a623" : "#b86d07",
                     }}
-                    title={
-                      v != null
-                        ? `${d.date} · lunch ${fmtDuration(v)}`
-                        : `${d.date} · no lunch detected`
-                    }
+                    title={b.tooltip}
                   />
                 </div>
               );
@@ -749,26 +843,58 @@ function LunchChart({ data }: { data: WeekDay[] | null }) {
         </div>
       </div>
 
-      {/* Day-of-week labels. Rendered OUTSIDE the chart box so they don't
+      {/* X-axis labels. Rendered OUTSIDE the chart box so they don't
           push the bar tops down relative to the axis. The left padding
           (w-8 + gap-2 = ~40px) matches the y-axis column so columns line
-          up with the bars above. */}
-      <div className="flex gap-2 mt-1">
+          up with the bars above.
+
+          Month range: each label is anchored at the top-center of its
+          column, then rotated -45° around its top-right corner. The
+          translateX(-50%) puts the label's right edge on the column
+          center BEFORE the rotation pivots around that same point —
+          so the result is a label whose right end touches the column
+          line and the rest of the text trails down-and-to-the-left
+          at 45°. Standard tilted-axis-label convention. Other ranges
+          (Week, 6m) keep the horizontal layout. */}
+      <div className={`flex gap-2 mt-1 ${range === "month" ? "mb-8" : ""}`}>
         <div className="w-8" />
         <div className="flex-1 flex gap-2 px-1">
-          {data.map((d) => {
-            const isToday = d.date === todayIso;
-            return (
-              <div
-                key={d.date}
-                className={`flex-1 text-center text-2xs tabular ${
-                  isToday ? "text-amber-400" : "text-ink-400"
-                }`}
-              >
-                {new Date(d.date + "T00:00:00").toLocaleDateString([], { weekday: "short" })}
-              </div>
-            );
-          })}
+          {bars.map((b) => (
+            <div
+              key={b.key}
+              className={
+                "flex-1 text-2xs tabular " +
+                (range === "month"
+                  ? "relative h-3 overflow-visible"
+                  : "text-center") +
+                " " +
+                (b.isToday ? "text-amber-400" : "text-ink-400")
+              }
+            >
+              {range === "month" ? (
+                // Geometry: anchor the span at left-1/2 of the column
+                // (its left edge sits ON the column center line).
+                // translateX(-100%) shifts the span left by its full
+                // width, so the RIGHT edge of the span lands on the
+                // column center. transform-origin: top right then pivots
+                // the rotation around that same point — the column
+                // center — so the rotated text trails down-and-to-the-
+                // left at 45°. Each label's right end touches its
+                // column line; the text reads upward-toward-the-right.
+                <span
+                  className="absolute left-1/2 top-0 whitespace-nowrap"
+                  style={{
+                    transform: "translateX(-100%) rotate(-45deg)",
+                    transformOrigin: "top right",
+                  }}
+                >
+                  {b.label}
+                </span>
+              ) : (
+                b.label
+              )}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -779,7 +905,7 @@ function LunchChart({ data }: { data: WeekDay[] | null }) {
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="w-2 h-2 bg-amber-400" />
-          <span>Today</span>
+          <span>{range === "week" ? "Today" : range === "month" ? "This week" : "This month"}</span>
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="w-4 border-t border-dashed border-amber-400/60" />
@@ -820,22 +946,21 @@ function BreaksList({ absences }: { absences: Absence[] }) {
 export default function App() {
   const [heatmapRange, setHeatmapRange] = useState<HeatmapRange>("year");
   const heatmapCfg = HEATMAP_RANGES.find((r) => r.value === heatmapRange)!;
+  const [wpmRange, setWpmRange] = useState<WpmRange>("today");
+  const [yawnRange, setYawnRange] = useState<YawnRange>("year");
+  const [lunchRange, setLunchRange] = useState<LunchRange>("week");
+  const lunchCfg = LUNCH_RANGES.find((r) => r.value === lunchRange)!;
+  const pinControls = usePinControls();
+
+  // The heatmap and the lunch chart both consume `/productivity`. Fetch
+  // ONCE with the larger window so neither ends up data-starved when the
+  // user changes a range. The endpoint clamps days to 365 internally, so
+  // the worst case is two consumers fighting over a year of data.
+  const productivityDays = Math.max(heatmapCfg.days, lunchCfg.days);
 
   const summary = useFetch<Summary>(`${API}/summary`, POLL_MS);
-  const weekly = useFetch<WeekDay[]>(`${API}/weekly`, POLL_MS);
   const timeline = useFetch<TimelineResp>(`${API}/timeline`, POLL_MS);
-  const productivity = useFetch<ProductivityDay[]>(`${API}/productivity?days=${heatmapCfg.days}`, POLL_MS);
-
-  const atDeskHours = useMemo(() => {
-    if (!timeline) return null;
-    // Phone is deliberately NOT counted toward at-desk time — it's the
-    // inverse signal (disengagement). Mirrors the backend's `/productivity`
-    // at_desk_min calculation.
-    const s = timeline.segments
-      .filter((seg) => seg.activity === "at_desk" || seg.activity === "sipping")
-      .reduce((acc, seg) => acc + seg.duration_s, 0);
-    return s / 3600;
-  }, [timeline]);
+  const productivity = useFetch<ProductivityDay[]>(`${API}/productivity?days=${productivityDays}`, POLL_MS);
 
   const today = summary?.date ? new Date(summary.date + "T00:00:00") : new Date();
   const dateLabel = today.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
@@ -861,45 +986,28 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-6">
-        {/* Metric strip */}
-        <Panel>
-          <div className="flex">
-            <Metric
-              label="At desk"
-              value={atDeskHours != null ? fmtDuration(atDeskHours * 60) : "—"}
-              sub="active today"
-            />
-            <Metric
-              label="Sips"
-              value={String(summary?.sip_count ?? "—")}
-              sub="hydration"
-            />
-            <Metric
-              label="On phone"
-              value={summary?.phone_min != null ? fmtDuration(summary.phone_min) : "—"}
-              sub={
-                summary?.phone_count != null
-                  ? summary.phone_count === 0
-                    ? "no sessions"
-                    : `${summary.phone_count} session${summary.phone_count === 1 ? "" : "s"} · avg ${fmtDuration(summary.phone_avg_session_min ?? 0)}`
-                  : "—"
-              }
-            />
-            <Metric
-              label="Short breaks"
-              value={String(summary?.short_break_count ?? "—")}
-              sub={summary ? `avg ${fmtDuration(summary.avg_break_duration_min)}` : "—"}
-            />
-            <Metric
-              label="Lunch"
-              value={summary?.lunch ? fmtDuration(summary.lunch.duration_min) : "—"}
-              sub={summary?.lunch ? `${fmtClock(summary.lunch.start)}–${fmtClock(summary.lunch.end)}` : "not yet"}
-            />
+        {/* Metric strip — user-pinnable tiles from the metric catalog.
+            Default set matches the v0.x five tiles for migrating users.
+            "customize pins" is rendered as plain text above the rightmost
+            tile (no panel header, no chip) so it reads as an offer, not
+            a control. */}
+        <div>
+          <div className="flex justify-end mb-1.5">
+            <button
+              type="button"
+              onClick={pinControls.openPicker}
+              className="text-2xs lowercase text-ink-400 hover:text-amber-400 transition-colors"
+            >
+              customize pins
+            </button>
           </div>
-        </Panel>
+          <section className="border border-ink-700 bg-ink-900">
+            <TileGrid inputs={{ summary, timeline, productivity }} controls={pinControls} />
+          </section>
+        </div>
 
         {/* Timeline */}
-        <Panel title="Today" right={timeline?.date}>
+        <Panel title="Today" right={timeline?.date} collapsibleId="timeline">
           <DayTimeline data={timeline} />
         </Panel>
 
@@ -930,22 +1038,117 @@ export default function App() {
               </div>
             }
             className="lg:col-span-2"
+            collapsibleId="productivity"
           >
             <ProductivityHeatmap data={productivity} range={heatmapRange} />
           </Panel>
 
-          <Panel title="Lunch by day" right="this week">
-            <LunchChart data={weekly} />
+          <Panel
+            title="Lunch by day"
+            right={
+              <div className="inline-flex border border-ink-700">
+                {LUNCH_RANGES.map((r) => {
+                  const active = r.value === lunchRange;
+                  return (
+                    <button
+                      key={r.value}
+                      type="button"
+                      onClick={() => setLunchRange(r.value)}
+                      className={
+                        "px-2 py-0.5 text-2xs uppercase tracking-[0.16em] tabular border-r border-ink-700 last:border-r-0 transition-colors " +
+                        (active
+                          ? "bg-amber-600 text-ink-950"
+                          : "text-ink-300 hover:text-ink-100 hover:bg-ink-800")
+                      }
+                    >
+                      {r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            }
+            collapsibleId="lunch"
+          >
+            <LunchChart data={productivity} range={lunchRange} />
           </Panel>
         </div>
 
+        {/* WPM-over-day (stub data) */}
+        <Panel
+          title="Typing pace"
+          right={
+            <div className="inline-flex border border-ink-700">
+              {WPM_RANGES.map((r) => {
+                const active = r.value === wpmRange;
+                return (
+                  <button
+                    key={r.value}
+                    type="button"
+                    onClick={() => setWpmRange(r.value)}
+                    className={
+                      "px-2 py-0.5 text-2xs uppercase tracking-[0.16em] tabular border-r border-ink-700 last:border-r-0 transition-colors " +
+                      (active
+                        ? "bg-amber-600 text-ink-950"
+                        : "text-ink-300 hover:text-ink-100 hover:bg-ink-800")
+                    }
+                  >
+                    {r.label}
+                  </button>
+                );
+              })}
+            </div>
+          }
+          collapsibleId="wpm"
+        >
+          <WpmChart range={wpmRange} />
+        </Panel>
+
+        {/* Yawn heatmap — same calendar layout as the productivity heatmap
+            so users only have to learn one mental model. Stub data. */}
+        <Panel
+          title="Energy levels"
+          right={
+            <div className="inline-flex border border-ink-700">
+              {YAWN_RANGES.map((r) => {
+                const active = r.value === yawnRange;
+                return (
+                  <button
+                    key={r.value}
+                    type="button"
+                    onClick={() => setYawnRange(r.value)}
+                    className={
+                      "px-2 py-0.5 text-2xs uppercase tracking-[0.16em] tabular border-r border-ink-700 last:border-r-0 transition-colors " +
+                      (active
+                        ? "bg-amber-600 text-ink-950"
+                        : "text-ink-300 hover:text-ink-100 hover:bg-ink-800")
+                    }
+                  >
+                    {r.label}
+                  </button>
+                );
+              })}
+            </div>
+          }
+          collapsibleId="yawns"
+        >
+          <YawnHeatmap range={yawnRange} />
+        </Panel>
+
         {/* Breaks list */}
-        <Panel title="Breaks today" right={summary ? `${summary.break_count} total` : ""}>
+        <Panel
+          title="Breaks today"
+          right={summary ? `${summary.break_count} total` : ""}
+          collapsibleId="breaks"
+        >
           <BreaksList absences={summary?.absences ?? []} />
         </Panel>
 
 
       </main>
+
+      {/* Pin picker modal — rendered at the App root so it overlays
+          the entire dashboard, not just a single panel. */}
+      <PinPicker controls={pinControls} />
     </div>
   );
 }

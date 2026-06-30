@@ -23,6 +23,7 @@ interface Summary {
   sip_count: number;
   phone_count: number;
   phone_min: number;
+  phone_avg_session_min: number;
   short_break_count: number;
   long_break_count: number;
   break_count: number;
@@ -72,6 +73,8 @@ interface ProductivityDay {
   long_break_count: number;
   lunch_duration_min: number | null;
   at_desk_min: number;
+  break_total_min: number;   // sum of all real (non-noise) absence durations
+  phone_min: number;
 }
 
 type HeatmapRange = "year" | "6m" | "month";
@@ -170,9 +173,13 @@ function Panel({ title, right, children, className = "" }: {
   title?: string; right?: React.ReactNode; children: React.ReactNode; className?: string;
 }) {
   return (
-    <section className={`border border-ink-700 bg-ink-900 ${className}`}>
+    // flex column with h-full lets children that want to stretch use
+    // `h-full` on their root and actually fill the remaining height
+    // (e.g. the productivity heatmap centers itself vertically inside
+    // the panel when the sibling panel makes the row taller).
+    <section className={`border border-ink-700 bg-ink-900 flex flex-col ${className}`}>
       {title && (
-        <header className="flex items-center justify-between px-4 py-2 border-b border-ink-700">
+        <header className="flex items-center justify-between px-4 py-2 border-b border-ink-700 shrink-0">
           <h2 className="text-2xs uppercase tracking-[0.18em] text-ink-300 font-medium">{title}</h2>
           {right && <div className="text-2xs text-ink-400 tabular">{right}</div>}
         </header>
@@ -278,19 +285,6 @@ function DayTimeline({ data }: { data: TimelineResp | null }) {
 
   return (
     <div className="px-4 py-4">
-      <div className="flex items-baseline justify-between mb-2 text-2xs text-ink-400">
-        <span>
-          {fmtHour12(startHour)} <span className="text-ink-500">→</span> {fmtHour12(endHour)}
-        </span>
-        <span className="tabular">
-          <span className="text-ink-300">{fmtDuration(totals.at_desk / 60)}</span> at desk
-          <span className="text-ink-500 mx-2">·</span>
-          <span className="text-ink-300">{breakCount}</span> break{breakCount === 1 ? "" : "s"}{" "}
-          <span className="text-ink-500">·</span>{" "}
-          <span className="text-ink-300">{fmtDuration(totals.away / 60)}</span> away
-        </span>
-      </div>
-
       {/* Main bar */}
       <div
         className="relative h-9 border border-ink-700 overflow-hidden"
@@ -408,28 +402,57 @@ function DayTimeline({ data }: { data: TimelineResp | null }) {
 function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; range: HeatmapRange }) {
   if (!data) return <div className="px-4 py-6 text-ink-400 text-sm">Loading…</div>;
 
-  // Filter to "tracked" days only (>= 30 min of at-desk time) for the average
-  // and the legend scale. Untracked days render as a neutral "no data" cell.
+  // Filter to "tracked" days only (>= 30 min of at-desk time) for the
+  // average and the legend stats. Untracked days render as "no data".
   const tracked = data.filter((d) => d.at_desk_min >= 30);
   if (tracked.length === 0) {
     return <div className="px-4 py-6 text-ink-400 text-sm">Not enough data yet — run the watcher for a full workday.</div>;
   }
 
-  const counts = tracked.map((d) => d.break_count).sort((a, b) => a - b);
-  const minCount = counts[0];
-  const maxCount = counts[counts.length - 1];
-  const avgCount = tracked.reduce((s, d) => s + d.break_count, 0) / tracked.length;
+  // Focus ratio per day:
+  //   at_desk / (at_desk + break + PHONE_WEIGHT * phone)
+  //
+  // Phone is weighted at HALF compared to being away from the desk. A
+  // glance at your phone while a build runs is meaningfully different
+  // from disappearing for 30 minutes — both count against focus, but
+  // not equally. (Phone events are also still over-counted somewhat by
+  // the detector, so this also gives the formula a buffer against that.)
+  // This measures how much of your tracked time you actually spent at
+  // your desk doing work. It's bounded 0..1 and inherently normalized —
+  // a half-day and a full-day score on the same scale. Lunch counts
+  // against the ratio (it's time off your desk, however justified).
+  const PHONE_WEIGHT = 0.5;
+  function focusRatio(d: ProductivityDay): number {
+    const denom = d.at_desk_min + d.break_total_min + PHONE_WEIGHT * d.phone_min;
+    if (denom <= 0) return 0;
+    return d.at_desk_min / denom;
+  }
 
-  // Five buckets: 0 = fewest breaks (most focused / brightest amber),
-  // 4 = most breaks (darkest). Single hue ramp.
+  const avgRatio = tracked.reduce((s, d) => s + focusRatio(d), 0) / tracked.length;
+  const minRatio = Math.min(...tracked.map(focusRatio));
+  const maxRatio = Math.max(...tracked.map(focusRatio));
+
+  // Five FIXED buckets keyed to focus ratio. Brightest amber = most
+  // focused day; darkest = least focused. These thresholds are tuned
+  // for a normal workday (typing/reading with occasional breaks) and
+  // are intentionally forgiving — a real workday with lunch + a couple
+  // of meetings + bathroom breaks + some phone time can dip below 50%
+  // and still represent solid work, so the top bucket starts at 65%
+  // and the "barely worked" floor isn't reached until ~15%.
+  // 0 → brightest (most focused), 4 → darkest (least focused).
   const ramp = ["#f5a623", "#b86d07", "#5c3604", "#3a2202", "#1c1a17"];
+  const RATIO_THRESHOLDS = [0.65, 0.45, 0.30, 0.15]; // descending
   const noData = "#0a0908";
 
-  const bucket = (n: number): number => {
-    if (maxCount === minCount) return 0;
-    const t = (n - minCount) / (maxCount - minCount);
-    return Math.min(ramp.length - 1, Math.floor(t * ramp.length));
+  const bucket = (ratio: number): number => {
+    // 0 = highest ratio (brightest), 4 = lowest.
+    for (let i = 0; i < RATIO_THRESHOLDS.length; i++) {
+      if (ratio >= RATIO_THRESHOLDS[i]) return i;
+    }
+    return ramp.length - 1;
   };
+
+  const fmtPct = (r: number): string => `${Math.round(r * 100)}%`;
 
   const byDate: Record<string, ProductivityDay> = {};
   for (const d of data) byDate[d.date] = d;
@@ -506,7 +529,10 @@ function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; 
   const dowLabels = ["", "Mon", "", "Wed", "", "Fri", ""];
 
   return (
-    <div className="px-4 py-4">
+    // h-full + justify-center so the heatmap floats vertically centered
+    // inside whatever height the panel takes from its sibling (Lunch
+    // chart), rather than hugging the top and leaving dead space below.
+    <div className="px-4 py-4 h-full flex flex-col justify-center">
 
 
       <div className="flex gap-1">
@@ -528,7 +554,7 @@ function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; 
           className="flex-1 grid gap-[2px]"
           style={{
             gridTemplateColumns: `repeat(${weeks.length}, minmax(0, 1fr))`,
-            maxWidth: `${weeks.length * 16}px`,
+            maxWidth: `${weeks.length * 22}px`,
           }}
         >
           {/* Month strip spans all columns (only when there's >1 month) */}
@@ -571,13 +597,14 @@ function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; 
                     />
                   );
                 }
-                const b = bucket(cell.day.break_count);
+                const ratio = focusRatio(cell.day);
+                const b = bucket(ratio);
                 return (
                   <div
                     key={di}
                     className={common}
                     style={{ backgroundColor: ramp[b] }}
-                    title={`${cell.date} · ${cell.day.break_count} break${cell.day.break_count === 1 ? "" : "s"} · ${fmtDuration(cell.day.at_desk_min)} at desk`}
+                    title={`${cell.date} · ${fmtPct(ratio)} focused`}
                   />
                 );
               })}
@@ -589,18 +616,41 @@ function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; 
       {/* Legend */}
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-ink-400">
         <span className="inline-flex items-center gap-2">
-          <span>Fewer breaks</span>
+          <span>More focused</span>
           {ramp.map((c) => (
             <span key={c} className="w-3 h-3" style={{ backgroundColor: c }} />
           ))}
-          <span>More breaks</span>
+          <span>Less focused</span>
         </span>
         <span className="text-ink-500">
-          range {minCount}–{maxCount} · avg {avgCount.toFixed(1)}/day
+          range {fmtPct(minRatio)}–{fmtPct(maxRatio)} · avg {fmtPct(avgRatio)}
         </span>
         <span className="inline-flex items-center gap-2">
           <span className="w-3 h-3 border border-ink-800" style={{ backgroundColor: noData }} />
           <span>no data</span>
+        </span>
+        {/* Muted text affordance — explains the focus_ratio formula and
+            bucket thresholds on hover. Plain underlined text reads cleaner
+            here than a chip-bordered icon next to the legend swatches. */}
+        <span
+          className="ml-auto underline decoration-dotted underline-offset-2 text-ink-500 cursor-help"
+          title={
+            "Focus ratio = at-desk / (at-desk + breaks + 0.5 × phone)\n" +
+            "Phone is half-weighted: a glance during a build is meaningfully\n" +
+            "different from disappearing for 30 minutes. Bounded 0–100% and\n" +
+            "inherently normalized (a half-day and a full-day score on the\n" +
+            "same scale). Lunch counts against the ratio (it's time off your\n" +
+            "desk, however justified).\n\n" +
+            "Color buckets:\n" +
+            "  ≥ 65%   brightest amber: mostly focused\n" +
+            "  ≥ 45%   bright: focused with normal breaks\n" +
+            "  ≥ 30%   mid: meaningful break/phone time\n" +
+            "  ≥ 15%   dark: mostly off-task\n" +
+            "  < 15%   darkest: barely worked at desk\n\n" +
+            "Days with <30 min of at-desk time render as 'no data'."
+          }
+        >
+          how this is calculated
         </span>
       </div>
     </div>
@@ -622,12 +672,6 @@ function LunchChart({ data }: { data: WeekDay[] | null }) {
 
   return (
     <div className="px-4 py-4">
-      <div className="text-2xs text-ink-300 mb-3">
-        Lunch duration per day
-        <span className="text-ink-500 ml-2">
-          · {hasAny ? `avg ${fmtDuration(avg)} over ${durations.length}d` : "no lunches detected yet"}
-        </span>
-      </div>
 
       <div className="flex gap-2 h-36">
         {/* Y axis */}
@@ -643,7 +687,11 @@ function LunchChart({ data }: { data: WeekDay[] | null }) {
           ))}
         </div>
 
-        {/* Bars + gridlines + average line */}
+        {/* Bars + gridlines + average line. Critical: the bar heights and
+            the average line MUST share the exact same vertical space —
+            both `(v / niceMax) * 100%` of THIS container — or the avg
+            line drifts above/below the bars. That's why the value/day
+            labels are rendered OUTSIDE this box, in the row below. */}
         <div className="relative flex-1 border-l border-b border-ink-700">
           {ticks.slice(1).map((t) => (
             <div
@@ -665,20 +713,26 @@ function LunchChart({ data }: { data: WeekDay[] | null }) {
             </div>
           )}
 
+          {/* Bars only — each column fills the chart vertically, bar grows
+              from the bottom to its scaled height. */}
           <div className="absolute inset-0 flex items-end gap-2 px-1">
             {data.map((d) => {
               const v = d.lunch_duration_min;
               const isToday = d.date === todayIso;
               const h = v != null ? (v / niceMax) * 100 : 0;
               return (
-                <div key={d.date} className="flex-1 flex flex-col items-center justify-end h-full">
-                  <div className="text-2xs text-ink-200 tabular mb-0.5">
-                    {v != null ? Math.round(v) : ""}
-                  </div>
+                <div key={d.date} className="flex-1 relative h-full flex items-end">
+                  {v != null && (
+                    <div
+                      className="absolute -top-4 left-0 right-0 text-center text-2xs text-ink-200 tabular"
+                    >
+                      {Math.round(v)}
+                    </div>
+                  )}
                   <div
                     className="w-full"
                     style={{
-                      height: v != null ? `${h}%` : 0,
+                      height: `${h}%`,
                       minHeight: v != null ? 2 : 0,
                       backgroundColor: isToday ? "#f5a623" : "#b86d07",
                     }}
@@ -688,13 +742,33 @@ function LunchChart({ data }: { data: WeekDay[] | null }) {
                         : `${d.date} · no lunch detected`
                     }
                   />
-                  <div className={`mt-1 text-2xs tabular ${isToday ? "text-amber-400" : "text-ink-400"}`}>
-                    {new Date(d.date + "T00:00:00").toLocaleDateString([], { weekday: "short" })}
-                  </div>
                 </div>
               );
             })}
           </div>
+        </div>
+      </div>
+
+      {/* Day-of-week labels. Rendered OUTSIDE the chart box so they don't
+          push the bar tops down relative to the axis. The left padding
+          (w-8 + gap-2 = ~40px) matches the y-axis column so columns line
+          up with the bars above. */}
+      <div className="flex gap-2 mt-1">
+        <div className="w-8" />
+        <div className="flex-1 flex gap-2 px-1">
+          {data.map((d) => {
+            const isToday = d.date === todayIso;
+            return (
+              <div
+                key={d.date}
+                className={`flex-1 text-center text-2xs tabular ${
+                  isToday ? "text-amber-400" : "text-ink-400"
+                }`}
+              >
+                {new Date(d.date + "T00:00:00").toLocaleDateString([], { weekday: "short" })}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -803,7 +877,13 @@ export default function App() {
             <Metric
               label="On phone"
               value={summary?.phone_min != null ? fmtDuration(summary.phone_min) : "—"}
-              sub={summary?.phone_count != null ? `${summary.phone_count} session${summary.phone_count === 1 ? "" : "s"}` : "—"}
+              sub={
+                summary?.phone_count != null
+                  ? summary.phone_count === 0
+                    ? "no sessions"
+                    : `${summary.phone_count} session${summary.phone_count === 1 ? "" : "s"} · avg ${fmtDuration(summary.phone_avg_session_min ?? 0)}`
+                  : "—"
+              }
             />
             <Metric
               label="Short breaks"
@@ -823,7 +903,7 @@ export default function App() {
           <DayTimeline data={timeline} />
         </Panel>
 
-        {/* Two-column row */}
+        {/* Two-column row: heatmap (2/3) + lunch chart (1/3) side by side. */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <Panel
             title="Productivity"
@@ -853,6 +933,7 @@ export default function App() {
           >
             <ProductivityHeatmap data={productivity} range={heatmapRange} />
           </Panel>
+
           <Panel title="Lunch by day" right="this week">
             <LunchChart data={weekly} />
           </Panel>

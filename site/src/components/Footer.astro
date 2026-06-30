@@ -1,0 +1,23 @@
+---
+const year = 2026;
+const GH = "https://github.com/nishanthjadav/desk-watcher";
+---
+
+<footer class="border-t border-ink-700 bg-ink-950 mt-auto">
+  <div
+    class="max-w-6xl mx-auto px-6 py-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between text-2xs text-ink-400"
+  >
+    <span class="lowercase">© {year} desk watcher.</span>
+    <nav class="flex gap-4">
+      <a href="/" class="lowercase hover:text-amber-400 transition-colors">home</a>
+      <a href="/privacy" class="lowercase hover:text-amber-400 transition-colors">privacy</a>
+      <a
+        href={GH}
+        class="lowercase hover:text-amber-400 transition-colors"
+        rel="noopener"
+      >
+        github
+      </a>
+    </nav>
+  </div>
+</footer>

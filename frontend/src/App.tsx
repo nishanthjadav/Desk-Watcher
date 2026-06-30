@@ -2,14 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Panel } from "./components/Panel";
 import { PinPicker, TileGrid, usePinControls } from "./components/TileGrid";
-import {
-  WPM_RANGES,
-  WpmChart,
-  type WpmRange,
-  YAWN_RANGES,
-  YawnHeatmap,
-  type YawnRange,
-} from "./components/Tier2Panels";
 import type {
   Absence,
   Category,
@@ -946,8 +938,6 @@ function BreaksList({ absences }: { absences: Absence[] }) {
 export default function App() {
   const [heatmapRange, setHeatmapRange] = useState<HeatmapRange>("year");
   const heatmapCfg = HEATMAP_RANGES.find((r) => r.value === heatmapRange)!;
-  const [wpmRange, setWpmRange] = useState<WpmRange>("today");
-  const [yawnRange, setYawnRange] = useState<YawnRange>("year");
   const [lunchRange, setLunchRange] = useState<LunchRange>("week");
   const lunchCfg = LUNCH_RANGES.find((r) => r.value === lunchRange)!;
   const pinControls = usePinControls();
@@ -1072,67 +1062,6 @@ export default function App() {
             <LunchChart data={productivity} range={lunchRange} />
           </Panel>
         </div>
-
-        {/* WPM-over-day (stub data) */}
-        <Panel
-          title="Typing pace"
-          right={
-            <div className="inline-flex border border-ink-700">
-              {WPM_RANGES.map((r) => {
-                const active = r.value === wpmRange;
-                return (
-                  <button
-                    key={r.value}
-                    type="button"
-                    onClick={() => setWpmRange(r.value)}
-                    className={
-                      "px-2 py-0.5 text-2xs uppercase tracking-[0.16em] tabular border-r border-ink-700 last:border-r-0 transition-colors " +
-                      (active
-                        ? "bg-amber-600 text-ink-950"
-                        : "text-ink-300 hover:text-ink-100 hover:bg-ink-800")
-                    }
-                  >
-                    {r.label}
-                  </button>
-                );
-              })}
-            </div>
-          }
-          collapsibleId="wpm"
-        >
-          <WpmChart range={wpmRange} />
-        </Panel>
-
-        {/* Yawn heatmap — same calendar layout as the productivity heatmap
-            so users only have to learn one mental model. Stub data. */}
-        <Panel
-          title="Energy levels"
-          right={
-            <div className="inline-flex border border-ink-700">
-              {YAWN_RANGES.map((r) => {
-                const active = r.value === yawnRange;
-                return (
-                  <button
-                    key={r.value}
-                    type="button"
-                    onClick={() => setYawnRange(r.value)}
-                    className={
-                      "px-2 py-0.5 text-2xs uppercase tracking-[0.16em] tabular border-r border-ink-700 last:border-r-0 transition-colors " +
-                      (active
-                        ? "bg-amber-600 text-ink-950"
-                        : "text-ink-300 hover:text-ink-100 hover:bg-ink-800")
-                    }
-                  >
-                    {r.label}
-                  </button>
-                );
-              })}
-            </div>
-          }
-          collapsibleId="yawns"
-        >
-          <YawnHeatmap range={yawnRange} />
-        </Panel>
 
         {/* Breaks list */}
         <Panel

@@ -37,9 +37,9 @@ export interface MetricInputs {
 
 export type MetricVariant = "number" | "sparkline";
 export type MetricGroup =
-  | "activity"     // sips, breaks, lunch, yawns — counter-shaped
+  | "activity"     // sips, breaks, lunch — counter-shaped
   | "time"         // at-desk, on-phone — duration-shaped
-  | "pace";        // WPM, focus ratio — rate/ratio-shaped
+  | "pace";        // focus ratio — rate/ratio-shaped
 
 export interface MetricDef {
   id: string;
@@ -165,24 +165,6 @@ export const METRIC_CATALOG: MetricDef[] = [
       value: summary ? String(summary.long_break_count) : EMPTY,
       sub: "today",
     }),
-  },
-
-  {
-    id: "yawns",
-    label: "Yawns",
-    description: "Yawns detected today. (Pipeline pending — requires labeled yawn training data.)",
-    group: "activity",
-    variant: "number",
-    selector: () => ({ value: EMPTY, sub: "pending detection" }),
-  },
-
-  {
-    id: "wpm",
-    label: "WPM",
-    description: "Your current typing pace, with a five-minute trace. (Pipeline pending — requires keystroke instrumentation.)",
-    group: "pace",
-    variant: "sparkline",
-    selector: () => ({ value: EMPTY, sub: "pending instrumentation", spark: [] }),
   },
 
   {

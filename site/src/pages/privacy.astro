@@ -1,0 +1,106 @@
+---
+import Base from "../layouts/Base.astro";
+import SectionFrame from "../components/SectionFrame.astro";
+
+const GH = "https://github.com/nishanthjadav/desk-watcher";
+---
+
+<Base
+  title="Privacy. Desk Watcher."
+  description="What Desk Watcher stores, what it doesn't, where data lives, and how to delete it."
+>
+  <article class="max-w-3xl mx-auto px-6 py-12 sm:py-16">
+    <p class="text-2xs uppercase tracking-[0.18em] text-ink-400 mb-4">privacy</p>
+    <h1 class="text-3xl sm:text-4xl font-semibold tracking-tight text-ink-100 lowercase">
+      what desk watcher stores. what it doesn't.
+    </h1>
+    <p class="mt-6 text-ink-400 text-2xs uppercase tracking-[0.18em] tabular">
+      last updated 2026-06-30
+    </p>
+
+    <div class="mt-10 space-y-6">
+      <SectionFrame title="the short version">
+        <p class="text-ink-200 leading-relaxed lowercase">
+          desk watcher runs entirely on your computer. your camera feed never
+          leaves the process that reads it. video frames are not saved. only
+          pose keypoints (anonymous dots) and short activity labels
+          (<span class="font-mono text-ink-100">at_desk</span>,
+          <span class="font-mono text-ink-100">sipping</span>,
+          <span class="font-mono text-ink-100">phone</span>,
+          <span class="font-mono text-ink-100">away</span>) ever get written to
+          disk, and only to a sqlite file on your own machine. there is no
+          server, no analytics, no telemetry, no account.
+        </p>
+      </SectionFrame>
+
+      <SectionFrame title="what gets stored">
+        <ul class="space-y-2.5 text-ink-200 leading-relaxed lowercase">
+          <li>
+            a local sqlite file at
+            <span class="font-mono text-ink-100">~/.desk-watcher/events.db</span>.
+          </li>
+          <li>
+            for each event: a start time, an end time, an activity label,
+            and the optional pose-derived numbers used to compute it (head
+            angle, wrist height, that sort of thing).
+          </li>
+          <li>
+            a small json of your dashboard preferences (which tiles you
+            pinned, which panels you collapsed) in your browser's
+            localstorage.
+          </li>
+        </ul>
+      </SectionFrame>
+
+      <SectionFrame title="what doesn't get stored, ever">
+        <ul class="space-y-2.5 text-ink-200 leading-relaxed lowercase">
+          <li>raw camera frames. they're read into memory, classified, and discarded.</li>
+          <li>audio. the microphone isn't touched.</li>
+          <li>screen contents. nothing on your screen is observed.</li>
+          <li>identity. desk watcher doesn't know who you are. it's pose dots and a label.</li>
+        </ul>
+      </SectionFrame>
+
+      <SectionFrame title="what leaves your machine">
+        <p class="text-ink-200 leading-relaxed lowercase">
+          nothing. there is no outbound network call in the watcher or the
+          api. the dashboard talks to
+          <span class="font-mono text-ink-100">localhost:8000</span> and
+          nowhere else. if you ever see this app open a socket to a non-local
+          address, that's a bug. file it.
+        </p>
+      </SectionFrame>
+
+      <SectionFrame title="how to delete everything">
+        <p class="text-ink-200 leading-relaxed lowercase">
+          quit the watcher, then delete
+          <span class="font-mono text-ink-100">~/.desk-watcher/events.db</span>.
+          that's the entire history. clear your browser's localstorage for the
+          dashboard origin to forget your pin and panel preferences.
+          uninstalling the app from your machine removes the rest.
+        </p>
+      </SectionFrame>
+
+      <SectionFrame title="when this changes">
+        <p class="text-ink-200 leading-relaxed lowercase">
+          if a future version ever adds optional cloud sync (for example, to
+          share a focus score with yourself across two laptops), it will be
+          off by default, scoped to data you explicitly opt in, and called
+          out on this page with a date. until then, this page describes the
+          whole product.
+        </p>
+      </SectionFrame>
+    </div>
+
+    <p class="mt-10 text-2xs lowercase text-ink-400">
+      questions? open an issue on
+      <a
+        class="text-amber-400 hover:text-amber-300 transition-colors"
+        href={`${GH}/issues`}
+        rel="noopener"
+      >
+        github
+      </a>.
+    </p>
+  </article>
+</Base>

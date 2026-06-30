@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    background-color: #0a0908;
+    color-scheme: dark;
+  }
+  body {
+    background-color: #0a0908;
+    color: #dcd6c9;
+    -webkit-font-smoothing: antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  ::selection {
+    background-color: #b86d07;
+    color: #fef8e7;
+  }
+}
+
+@layer utilities {
+  /* Tabular numerals — used on every clock, count, and duration so they
+     align in columns. Mirrors the same utility in the frontend. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The one piece of motion on this site (besides the once-per-second
+     clock tick): a blinking amber block caret next to the hero headline.
+     Hard on/off blink — softer easing would feel out of place against the
+     brutalist dashboard aesthetic. */
+  @keyframes dw-caret-blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+  .dw-caret {
+    display: inline-block;
+    width: 0.55em;
+    height: 1em;
+    vertical-align: -0.12em;
+    background-color: #ffff;
+    margin-left: 0.18em;
+    animation: dw-caret-blink 1.1s steps(1, end) infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dw-caret {
+      animation: none;
+      opacity: 1;
+    }
+  }
+}

@@ -1,0 +1,191 @@
+---
+import Base from "../layouts/Base.astro";
+import SectionFrame from "../components/SectionFrame.astro";
+
+// Hard-coded once; grep-and-replace if the repo ever moves.
+const GH = "https://github.com/nishanthjadav/desk-watcher";
+
+// Real PNG dimensions, so the browser reserves the right space and the
+// page doesn't shift when the images load. Read from the source files
+// at plan time — update if you swap a screenshot in.
+const SHOT_HERO = { w: 1545, h: 1261 };
+const SHOT_COLLAPSED = { w: 1500, h: 711 };
+const SHOT_PINS = { w: 751, h: 874 };
+---
+
+<Base>
+  {/* ── Hero ─────────────────────────────────────────────────────────── */}
+  <section class="max-w-6xl mx-auto px-6 pt-8 pb-10 sm:pt-12 sm:pb-16">
+    <h1 class="text-3xl sm:text-5xl font-semibold leading-tight tracking-tight text-ink-100">
+      your day at your desk, tracked.
+      <span class="dw-caret" aria-hidden="true"></span>
+    </h1>
+    <p class="mt-6 max-w-2xl text-ink-300 text-base sm:text-lg leading-relaxed lowercase">
+      desk watcher is a background app that uses your laptop camera to log
+      what you do at your desk and shows it on a live dashboard.
+      it runs locally and no video is ever saved.
+    </p>
+
+    <div class="mt-8 flex flex-wrap items-center gap-3">
+      <a
+        href={GH}
+        rel="noopener"
+        class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
+      >
+        view on github <span aria-hidden="true">→</span>
+      </a>
+      <a
+        href="#how"
+        class="text-2xs uppercase tracking-[0.16em] text-ink-300 hover:text-ink-100 hover:bg-ink-850 transition-colors px-4 py-2 border border-ink-700"
+      >
+        how it works
+      </a>
+    </div>
+
+    <div class="mt-12 sm:mt-16">
+      <img
+        src="/screenshots/overall-dashboard.png"
+        alt="Desk Watcher dashboard showing today's at-desk time, sips, phone usage, breaks, lunch, a live timeline, and a yearly productivity heatmap."
+        class="w-full border border-ink-700"
+        loading="eager"
+        width={SHOT_HERO.w}
+        height={SHOT_HERO.h}
+      />
+    </div>
+  </section>
+
+  {/* ── what it tracks / what it doesn't ─────────────────────────────── */}
+  <section class="max-w-6xl mx-auto px-6 pb-10 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <SectionFrame title="what it tracks">
+      <ul class="space-y-2.5 text-ink-200 leading-relaxed lowercase">
+        <li>- time away from desk, classified as short break, long break, or lunch.</li>
+        <li>- phone use, even when you think you're being subtle.</li>
+        <li>- break frequency, average length, when lunch starts and ends.</li>
+        <li>- a daily focus ratio you can actually defend.</li>
+        <li>- drinks, by the sip.</li>
+      </ul>
+    </SectionFrame>
+
+    <SectionFrame title="what it doesn't">
+      <ul class="space-y-2.5 text-ink-200 leading-relaxed lowercase">
+        <li>- record or save video.</li>
+        <li>- upload anything anywhere.</li>
+        <li>- require a login, an account, or a cloud.</li>
+        <li>- ping a server you didn't start.</li>
+        <li>- know who you are. it just sees pose keypoints.</li>
+      </ul>
+    </SectionFrame>
+  </section>
+
+  {/* ── how it works ─────────────────────────────────────────────────── */}
+  <section id="how" class="max-w-6xl mx-auto px-6 pb-10 scroll-mt-6">
+    <SectionFrame title="how it works" right="local pipeline">
+      <p class="text-ink-200 leading-relaxed lowercase">
+        a watcher loop runs in the background. every frame from your camera
+        passes through mediapipe pose to extract joint keypoints, then through
+        a random forest trained on ~3-second windows of those keypoints. the
+        four activity labels (at desk, sipping, on phone, away) score around
+        98% per-class on held-out data. a small yolo detector cross-checks
+        the phone calls in parallel. events land in a local sqlite database.
+        frames themselves are never stored.
+      </p>
+
+      {/* Flow row — mono pills, amber arrows. Wraps to two lines on mobile. */}
+      <div class="mt-6 flex flex-wrap items-center gap-y-3 gap-x-2 text-2xs">
+        <span class="border border-ink-700 bg-ink-850 px-3 py-1.5 font-mono text-ink-200">camera frame</span>
+        <span class="text-amber-400 font-mono px-1">→</span>
+        <span class="border border-ink-700 bg-ink-850 px-3 py-1.5 font-mono text-ink-200">pose keypoints</span>
+        <span class="text-amber-400 font-mono px-1">→</span>
+        <span class="border border-ink-700 bg-ink-850 px-3 py-1.5 font-mono text-ink-200">random forest + yolo</span>
+        <span class="text-amber-400 font-mono px-1">→</span>
+        <span class="border border-ink-700 bg-ink-850 px-3 py-1.5 font-mono text-ink-200">activity label</span>
+        <span class="text-amber-400 font-mono px-1">→</span>
+        <span class="border border-ink-700 bg-ink-850 px-3 py-1.5 font-mono text-ink-200">sqlite</span>
+        <span class="text-amber-400 font-mono px-1">→</span>
+        <span class="border border-ink-700 bg-ink-850 px-3 py-1.5 font-mono text-ink-200">dashboard</span>
+      </div>
+    </SectionFrame>
+  </section>
+
+  {/* ── keep it tidy ─────────────────────────────────────────────────── */}
+  <section class="max-w-6xl mx-auto px-6 pb-10">
+    <SectionFrame title="keep it tidy" right="collapse anything">
+      <p class="text-ink-200 leading-relaxed lowercase mb-6">
+        pin only the metrics that matter to you. the dashboard gets out of the way when you're not
+        looking at it.
+      </p>
+      <img
+        src="/screenshots/collapsed-view.png"
+        alt="The dashboard with most panels collapsed. Just the metric strip, today's timeline, and a row of collapsed panel headers."
+        class="w-full border border-ink-700"
+        loading="lazy"
+        width={SHOT_COLLAPSED.w}
+        height={SHOT_COLLAPSED.h}
+      />
+    </SectionFrame>
+  </section>
+
+  {/* ── pin what matters ─────────────────────────────────────────────── */}
+  <section class="max-w-6xl mx-auto px-6 pb-10">
+    <SectionFrame title="pin what matters" right="your tiles, your call">
+      <p class="text-ink-200 leading-relaxed lowercase mb-6">
+        pin any subset of the catalog, drop the ones
+        you don't care about, and the dashboard remembers across sessions.
+      </p>
+      <img
+        src="/screenshots/pins-popup-ui.png"
+        alt="The 'Customize pins' modal listing every available metric (at-desk, on phone, lunch, sips, short breaks, long breaks, focus), each with a description and a checkbox."
+        class="w-full max-w-2xl mx-auto border border-ink-700"
+        loading="lazy"
+        width={SHOT_PINS.w}
+        height={SHOT_PINS.h}
+      />
+    </SectionFrame>
+  </section>
+
+  {/* ── privacy ──────────────────────────────────────────────────────── */}
+  <section class="max-w-6xl mx-auto px-6 pb-10">
+    <SectionFrame title="privacy" right="local-only">
+      <p class="text-ink-200 leading-relaxed lowercase">
+        the camera feed never leaves the process that reads it. frames aren't
+        stored. only pose keypoints (the abstract dots) and event labels
+        (<span class="font-mono text-ink-100">at_desk</span>,
+        <span class="font-mono text-ink-100">sipping</span>,
+        <span class="font-mono text-ink-100">phone</span>,
+        <span class="font-mono text-ink-100">away</span>) get written to
+        <span class="font-mono text-ink-100">~/.desk-watcher/events.db</span>
+        on your machine. delete the file and the history is gone. there is
+        no server, no analytics, and no telemetry.
+      </p>
+      <a
+        href="/privacy"
+        class="inline-block mt-5 text-2xs uppercase tracking-[0.16em] text-amber-400 hover:text-amber-300 transition-colors"
+      >
+        read the full privacy note <span aria-hidden="true">→</span>
+      </a>
+    </SectionFrame>
+  </section>
+
+  {/* ── get it ───────────────────────────────────────────────────────── */}
+  <section class="max-w-6xl mx-auto px-6 pb-16">
+    <SectionFrame title="get it">
+      <p class="text-ink-200 leading-relaxed lowercase mb-6">
+        the windows + mac installer is coming. for now, clone the repo, run
+        <span class="font-mono text-ink-100">python watcher.py</span> in one
+        terminal,
+        <span class="font-mono text-ink-100">uvicorn api:app</span> in another,
+        and <span class="font-mono text-ink-100">npm run dev</span> in the
+        dashboard. takes about three minutes if your toolchain's awake.
+      </p>
+      <div class="flex flex-wrap items-center gap-3">
+        <a
+          href={GH}
+          rel="noopener"
+          class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
+        >
+          view on github <span aria-hidden="true">→</span>
+        </a>
+      </div>
+    </SectionFrame>
+  </section>
+</Base>

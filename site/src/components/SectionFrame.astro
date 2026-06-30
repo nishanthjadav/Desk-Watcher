@@ -1,0 +1,31 @@
+---
+// The landing-page echo of frontend/src/components/Panel.tsx. Used for
+// every section below the hero so the page reads as a stack of dashboard
+// panels — same border, same header treatment, same right-side chip.
+interface Props {
+  title?: string;
+  right?: string;
+  className?: string;
+}
+const { title, right, className = "" } = Astro.props;
+---
+
+<section class={`border border-ink-700 bg-ink-900 ${className}`}>
+  {(title || right) && (
+    <header class="flex items-center justify-between px-4 py-2 border-b border-ink-700">
+      {title && (
+        <h2 class="text-2xs uppercase tracking-[0.18em] text-ink-300 font-medium">
+          {title}
+        </h2>
+      )}
+      {right && (
+        <span class="text-2xs uppercase tracking-[0.16em] text-ink-400 tabular">
+          {right}
+        </span>
+      )}
+    </header>
+  )}
+  <div class="px-6 py-6 sm:px-8 sm:py-8">
+    <slot />
+  </div>
+</section>

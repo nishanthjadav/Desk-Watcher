@@ -1,0 +1,41 @@
+---
+// Mirrors the dashboard's header (App.tsx lines ~977-986) so the site
+// reads as the same product. Brand wordmark left, live clock right.
+// The clock script is `is:inline` so Astro leaves it untouched (no
+// hydration, no bundling) — it's ~10 lines of vanilla JS.
+---
+
+<header class="border-b border-ink-700 bg-ink-950">
+  <div class="max-w-6xl mx-auto px-6 py-4 flex items-baseline justify-between">
+    <a href="/" class="flex items-baseline gap-3">
+      <h1 class="text-amber-400 font-semibold tracking-wide text-lg uppercase">
+        DESK WATCHER
+      </h1>
+    </a>
+    <span
+      id="dw-clock"
+      class="font-mono text-ink-200 tabular text-sm"
+      aria-label="current time"
+    >
+      --:--:--
+    </span>
+  </div>
+</header>
+
+<script is:inline>
+  (function () {
+    var el = document.getElementById("dw-clock");
+    if (!el) return;
+    function tick() {
+      var d = new Date();
+      var h = d.getHours(), m = d.getMinutes(), s = d.getSeconds();
+      var suf = h < 12 ? "a" : "p";
+      var h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+      el.textContent =
+        h12 + ":" + String(m).padStart(2, "0") + ":" +
+        String(s).padStart(2, "0") + suf;
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+</script>

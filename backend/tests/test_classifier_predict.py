@@ -1,14 +1,21 @@
 """
-Tests for the ActivityClassifier.predict() decision tree — how the phone
-signal, sustained head-down signal, sustained sipping signal, and pose
-geometry compose into an activity label and confidence.
+Tests for ActivityClassifier.predict().
 
-The decision tree from classifier.py is:
-  phone_visible AND head_down            → "phone"   (0.90)
-  phone_visible AND wrists_low_and_close → "phone"   (0.78)
-  NOT phone_visible AND sustained_hd     → "phone"   (0.55)
-  is_sipping(latest) AND sustained_sip   → "sipping" (0.75)
-  (trained model output, or rule-default)
+The live classifier runs on the trained model's output, with two
+guard rails:
+
+  1. YOLO cross-check: a "phone" prediction is demoted to the model's
+     next-best non-phone class if the phone detector sees nothing
+     in frame.
+  2. Confidence floor: if the model's top probability is below
+     MODEL_CONF_FLOOR, fall back to "at_desk" rather than emit a
+     low-confidence label.
+
+The geometry short-circuits the classifier used to run (is_head_down,
+wrists_low_and_close, is_sipping) were removed because they over-fired
+on incidental matches (nose-scratch became sip, head-tilted typing
+became phone). The trained model scores ~98% per-class on held-out
+data, so we trust it.
 """
 from __future__ import annotations
 
@@ -20,138 +27,191 @@ def _buffer(landmarks: list[float], n: int = 30) -> list[tuple[float, list[float
     return [(float(i), landmarks) for i in range(n)]
 
 
-def _fresh_classifier() -> ActivityClassifier:
-    """A classifier with no trained model — exercises only the rule layer."""
-    # Path that doesn't exist → self.model stays None.
+def _no_model_classifier() -> ActivityClassifier:
+    """A classifier with no trained model — exercises the rule-based fallback."""
     return ActivityClassifier(model_path="/nonexistent/path/never/find.pkl")
 
 
-class TestPhonePriority:
-    def test_phone_visible_plus_head_down_is_phone_high_conf(self, head_down_landmarks):
-        clf = _fresh_classifier()
-        label, conf = clf.predict(
-            _buffer(head_down_landmarks),
-            phone_visible=True,
-            sustained_head_down=False,
-        )
-        assert label == "phone"
-        assert conf >= 0.85  # the high-confidence branch
+def _stub_model_classifier(classes: list[str], proba: list[float]) -> ActivityClassifier:
+    """A classifier whose trained model emits a fixed probability vector."""
+    class StubModel:
+        classes_ = classes
 
-    def test_phone_visible_plus_wrists_in_lap_is_phone_mid_conf(self, phone_in_lap_landmarks):
-        # Head is upright in this fixture → first branch fails, second
-        # (wrists_low_and_close) fires.
-        clf = _fresh_classifier()
-        label, conf = clf.predict(
-            _buffer(phone_in_lap_landmarks),
-            phone_visible=True,
-            sustained_head_down=False,
-        )
-        assert label == "phone"
-        assert 0.70 <= conf < 0.85
+        def predict_proba(self, X):
+            return [proba]
 
-    def test_sustained_head_down_without_visible_phone_is_phone_low_conf(self, head_down_landmarks):
-        # The phone-in-lap-no-visible-phone fallback.
-        clf = _fresh_classifier()
-        label, conf = clf.predict(
-            _buffer(head_down_landmarks),
-            phone_visible=False,
-            sustained_head_down=True,
-        )
-        assert label == "phone"
-        assert conf < 0.70
+    clf = _no_model_classifier()
+    clf.model = StubModel()
+    return clf
 
-    def test_no_signals_falls_through_to_at_desk(self, upright_landmarks):
-        clf = _fresh_classifier()
-        label, _ = clf.predict(
-            _buffer(upright_landmarks),
-            phone_visible=False,
-            sustained_head_down=False,
-        )
+
+# ── No-model fallback ─────────────────────────────────────────────────────
+
+class TestNoModelFallback:
+    """When no trained model is loaded, predict() falls through to a
+    time-of-day default. Production should always have a model — this
+    branch is a safety net for fresh installs and tests."""
+
+    def test_no_model_returns_at_desk(self, upright_landmarks):
+        clf = _no_model_classifier()
+        label, _ = clf.predict(_buffer(upright_landmarks), phone_visible=False)
         assert label == "at_desk"
 
 
-class TestSippingOverride:
-    def test_sipping_fires_when_geometry_and_sustained_signal_both_true(self, sipping_landmarks):
-        # Wrist-near-nose pose AND the rolling window has been sipping
-        # for long enough: this is a real sip.
-        clf = _fresh_classifier()
-        label, conf = clf.predict(
-            _buffer(sipping_landmarks),
-            phone_visible=False,
-            sustained_head_down=False,
-            sustained_sipping=True,
+# ── Trained model passes through ──────────────────────────────────────────
+
+class TestTrainedModelPassThrough:
+    """When the model is confident and the YOLO check doesn't object,
+    its prediction is what gets returned."""
+
+    def test_confident_at_desk_returned_as_is(self, upright_landmarks):
+        clf = _stub_model_classifier(
+            ["at_desk", "away", "phone", "sipping"],
+            [0.92, 0.02, 0.03, 0.03],
         )
+        label, conf = clf.predict(_buffer(upright_landmarks), phone_visible=False)
+        assert label == "at_desk"
+        assert conf == 0.92
+
+    def test_confident_sipping_returned_as_is(self, sipping_landmarks):
+        clf = _stub_model_classifier(
+            ["at_desk", "away", "phone", "sipping"],
+            [0.10, 0.00, 0.05, 0.85],
+        )
+        label, conf = clf.predict(_buffer(sipping_landmarks), phone_visible=False)
         assert label == "sipping"
-        assert conf > 0.5
+        assert conf == 0.85
 
-    def test_single_frame_sip_geometry_without_sustain_does_not_fire(self, sipping_landmarks):
-        # Regression: the over-counting bug. A momentary gesture (scratch
-        # nose, adjust glasses) puts the wrist near the face for ONE
-        # frame — that must not log a sip. The sustained-window check is
-        # the guard.
-        clf = _fresh_classifier()
-        label, _ = clf.predict(
-            _buffer(sipping_landmarks),
-            phone_visible=False,
-            sustained_head_down=False,
-            sustained_sipping=False,
+    def test_confident_phone_returned_when_detector_agrees(self, head_down_landmarks):
+        clf = _stub_model_classifier(
+            ["at_desk", "away", "phone", "sipping"],
+            [0.15, 0.00, 0.80, 0.05],
         )
-        assert label != "sipping"
+        label, conf = clf.predict(_buffer(head_down_landmarks), phone_visible=True)
+        assert label == "phone"
+        assert conf == 0.80
 
-    def test_sustained_sip_without_current_geometry_does_not_fire(self, upright_landmarks):
-        # The complementary guard: the window says "we were sipping recently"
-        # but the current frame is back at desk. We should NOT re-fire
-        # `sipping` after a drink ends — that would re-log every classifier
-        # tick during the tail of the sustained window.
-        clf = _fresh_classifier()
-        label, _ = clf.predict(
-            _buffer(upright_landmarks),
-            phone_visible=False,
-            sustained_head_down=False,
-            sustained_sipping=True,
+    def test_legacy_stretching_label_normalized_to_at_desk(self, upright_landmarks):
+        # Older 5-class models emit "stretching"; the live pipeline treats
+        # it as at_desk so legacy artifacts don't crash anything downstream.
+        clf = _stub_model_classifier(
+            ["at_desk", "stretching"],
+            [0.10, 0.90],
         )
-        assert label != "sipping"
+        label, conf = clf.predict(_buffer(upright_landmarks), phone_visible=False)
+        assert label == "at_desk"
+        assert conf == 0.90
 
-    def test_sustained_head_down_overrides_sipping_geometry(self, sipping_landmarks):
-        # The decision tree checks all three phone branches BEFORE checking
-        # sipping. So if the sustained-head-down signal is true, phone
-        # wins even though the wrist-near-nose geometry would otherwise
-        # have produced a sipping classification.
-        clf = _fresh_classifier()
-        label, _ = clf.predict(
-            _buffer(sipping_landmarks),
-            phone_visible=False,
-            sustained_head_down=True,
-            sustained_sipping=True,
+
+# ── YOLO phone cross-check ────────────────────────────────────────────────
+
+class TestPhoneYoloGate:
+    """A "phone" prediction is honored when YOLO sees a phone OR when the
+    model is highly confident (the phone-out-of-frame case — the model has
+    learned the pose of looking down at a phone in your lap). Otherwise
+    we demote to the next-best non-phone class."""
+
+    def test_low_conf_phone_demoted_when_detector_disagrees(self, head_down_landmarks):
+        # Model picks phone with 0.65 — above the conf floor (0.55) but
+        # below the OOF threshold (0.80). YOLO sees nothing. Should
+        # demote to runner-up.
+        clf = _stub_model_classifier(
+            ["at_desk", "phone", "sipping"],
+            [0.30, 0.65, 0.05],
         )
+        label, conf = clf.predict(_buffer(head_down_landmarks), phone_visible=False)
+        assert label == "at_desk"
+        assert conf == 0.30
+
+    def test_high_conf_phone_kept_even_when_detector_disagrees(self, head_down_landmarks):
+        # Phone-out-of-frame case: model is highly confident (≥ 0.80)
+        # that this is phone, but YOLO sees nothing because the phone
+        # is in the user's lap. Trust the model.
+        clf = _stub_model_classifier(
+            ["at_desk", "phone", "sipping"],
+            [0.10, 0.85, 0.05],
+        )
+        label, conf = clf.predict(_buffer(head_down_landmarks), phone_visible=False)
+        assert label == "phone"
+        assert conf == 0.85
+
+    def test_phone_at_oof_threshold_passes_through(self, head_down_landmarks):
+        # Exactly at the OOF threshold — should pass through, not demote.
+        clf = _stub_model_classifier(
+            ["at_desk", "phone"],
+            [0.20, ActivityClassifier.PHONE_OOF_CONF_THRESHOLD],
+        )
+        label, _ = clf.predict(_buffer(head_down_landmarks), phone_visible=False)
+        assert label == "phone"
+
+    def test_phone_demotion_skips_phone_in_order(self):
+        # Defensive: if there were ever two phone-like classes, demotion
+        # must skip past any "phone" entry to reach a non-phone label.
+        # (Today there's only one phone class; this just pins behavior.)
+        clf = _stub_model_classifier(
+            ["phone", "at_desk", "sipping"],
+            [0.60, 0.30, 0.10],
+        )
+        label, _ = clf.predict(_buffer([0.0] * 99), phone_visible=False)
+        assert label == "at_desk"
+
+    def test_non_phone_predictions_are_unaffected_by_detector(self, upright_landmarks):
+        # phone_visible should only affect the prediction when the model
+        # picks phone. A "sipping" prediction stays sipping regardless.
+        clf = _stub_model_classifier(
+            ["at_desk", "phone", "sipping"],
+            [0.20, 0.05, 0.75],
+        )
+        label_no_phone, _ = clf.predict(_buffer(upright_landmarks), phone_visible=False)
+        label_phone, _ = clf.predict(_buffer(upright_landmarks), phone_visible=True)
+        assert label_no_phone == "sipping"
+        assert label_phone == "sipping"
+
+    def test_low_conf_phone_kept_when_detector_confirms(self, head_down_landmarks):
+        # Even at low (but above-floor) phone confidence, if YOLO sees
+        # the phone we trust the model's call. The detector is the
+        # ground truth for "there is a phone here."
+        clf = _stub_model_classifier(
+            ["at_desk", "phone", "sipping"],
+            [0.30, 0.60, 0.10],
+        )
+        label, _ = clf.predict(_buffer(head_down_landmarks), phone_visible=True)
         assert label == "phone"
 
 
-class TestPhoneOverridesTrainedModel:
-    """
-    Regression: the trained classifier was trained on 4 classes that don't
-    include `phone`. If the override layer ever stops running, a held
-    phone would silently get classified as at_desk by the trained model.
-    """
+# ── Confidence floor ──────────────────────────────────────────────────────
 
-    def test_phone_layer_runs_even_when_a_model_is_loaded(self, head_down_landmarks, monkeypatch):
-        clf = _fresh_classifier()
+class TestConfidenceFloor:
+    """When the model is uncertain, default to at_desk rather than emit
+    a low-confidence specific activity. "I don't know but you're in
+    frame" is better than guessing phone or sip."""
 
-        # Inject a fake trained model that would always say "at_desk".
-        class StubModel:
-            classes_ = ["at_desk", "sipping", "away"]
-
-            def predict_proba(self, X):
-                return [[1.0, 0.0, 0.0]]
-
-        clf.model = StubModel()
-
-        label, conf = clf.predict(
-            _buffer(head_down_landmarks),
-            phone_visible=True,
-            sustained_head_down=False,
+    def test_below_floor_falls_back_to_at_desk(self, sipping_landmarks):
+        # Top class is sipping at 0.40 — below the 0.55 floor.
+        clf = _stub_model_classifier(
+            ["at_desk", "away", "phone", "sipping"],
+            [0.30, 0.05, 0.25, 0.40],
         )
-        # The phone override layer must short-circuit *before* the trained
-        # model gets a vote.
-        assert label == "phone"
-        assert conf >= 0.85
+        label, _ = clf.predict(_buffer(sipping_landmarks), phone_visible=False)
+        assert label == "at_desk"
+
+    def test_at_floor_passes_through(self, sipping_landmarks):
+        # Exactly at the floor: should emit the model's choice, not fall back.
+        clf = _stub_model_classifier(
+            ["at_desk", "sipping"],
+            [0.45, ActivityClassifier.MODEL_CONF_FLOOR],
+        )
+        label, conf = clf.predict(_buffer(sipping_landmarks), phone_visible=False)
+        assert label == "sipping"
+        assert conf == ActivityClassifier.MODEL_CONF_FLOOR
+
+    def test_demoted_phone_can_still_be_below_floor(self, head_down_landmarks):
+        # Phone demoted to at_desk runner-up which is itself below the
+        # floor — we still return at_desk (both branches land on at_desk
+        # but via different paths). The point is no low-conf "phone" leaks.
+        clf = _stub_model_classifier(
+            ["at_desk", "phone", "sipping"],
+            [0.30, 0.50, 0.20],
+        )
+        label, _ = clf.predict(_buffer(head_down_landmarks), phone_visible=False)
+        assert label == "at_desk"

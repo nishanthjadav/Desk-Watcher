@@ -50,6 +50,7 @@ class TestSummaryEndpoint:
         assert data["sip_count"] == 1
         assert data["phone_count"] == 1
         assert data["phone_min"] >= 9   # ~10 min of phone usage
+        assert data["phone_avg_session_min"] >= 9   # one 10-min session
         assert data["short_break_count"] == 1
         assert data["lunch"] is not None
         assert 30 <= data["lunch"]["duration_min"] <= 40
@@ -59,7 +60,7 @@ class TestSummaryEndpoint:
         # failure (frontend depends on these names).
         data = client.get(f"/summary?target_date={TODAY.isoformat()}").json()
         required = {
-            "date", "sip_count", "phone_count", "phone_min",
+            "date", "sip_count", "phone_count", "phone_min", "phone_avg_session_min",
             "short_break_count", "long_break_count",
             "break_count", "avg_break_duration_min",
             "lunch", "absences", "total_events",
@@ -91,6 +92,69 @@ class TestSummaryEndpoint:
         seed_events(client.database, rows)
         data = client.get(f"/summary?target_date={TODAY.isoformat()}").json()
         assert data["sip_count"] == 2
+
+    def test_consecutive_phone_heartbeats_coalesce_into_one_session(self, client):
+        # Regression for the "527 sessions" bug. The watcher heartbeats
+        # `phone` every ~10s while you're on your phone. /summary must
+        # report the count of distinct SESSIONS, not raw event rows.
+        # 7 heartbeats over 60s = 1 session.
+        rows = [(_ts(9, 0), "at_desk")]
+        for sec in range(0, 60, 10):     # 0, 10, 20, 30, 40, 50
+            rows.append((_ts(10, 0, sec), "phone"))
+        rows.append((_ts(10, 0, 55), "phone"))   # one more, still same session
+        rows.append((_ts(10, 2),     "at_desk")) # end of session
+        seed_events(client.database, rows)
+        data = client.get(f"/summary?target_date={TODAY.isoformat()}").json()
+        assert data["phone_count"] == 1
+
+    def test_well_separated_phone_events_are_distinct_sessions(self, client):
+        # Two phone usages > 2 minutes apart are two sessions.
+        rows = [
+            (_ts(9, 0),  "at_desk"),
+            (_ts(9, 30), "phone"),
+            (_ts(10, 0), "phone"),    # 30 min later — definitely a new session
+        ]
+        seed_events(client.database, rows)
+        data = client.get(f"/summary?target_date={TODAY.isoformat()}").json()
+        assert data["phone_count"] == 2
+
+    def test_sips_inside_a_real_absence_are_suppressed(self, client):
+        # Regression: a coworker walks past during your 2:33-3:21 break,
+        # which triggers a spurious sip classification. The watcher then
+        # immediately re-detects no pose (coworker leaves) so another
+        # `away` row follows within MIN_RETURN_S — keeping the absence
+        # open. The spurious sip is INSIDE the absence interval and
+        # must not be counted.
+        rows = [
+            (_ts(9, 0),       "at_desk"),
+            (_ts(14, 33),     "away"),
+            (_ts(14, 50),     "sipping"),   # spurious — coworker walks by
+            (_ts(14, 50, 5),  "away"),      # coworker gone 5s later
+            (_ts(15, 21),     "at_desk"),
+        ]
+        seed_events(client.database, rows)
+        data = client.get(f"/summary?target_date={TODAY.isoformat()}").json()
+        # The spurious mid-absence sip must be suppressed.
+        assert data["sip_count"] == 0
+        # The absence is still recognized as ONE continuous break
+        # (could be classified as short_break, long_break, or lunch
+        # depending on duration + time of day — we just check that
+        # exactly one absence survives).
+        assert len(data["absences"]) == 1
+
+    def test_phone_inside_a_real_absence_is_suppressed(self, client):
+        rows = [
+            (_ts(9, 0),       "at_desk"),
+            (_ts(14, 33),     "away"),
+            (_ts(14, 45),     "phone"),     # spurious mid-break phone
+            (_ts(14, 46),     "phone"),     # heartbeat
+            (_ts(14, 46, 30), "away"),      # back to away within MIN_RETURN_S
+            (_ts(15, 21),     "at_desk"),
+        ]
+        seed_events(client.database, rows)
+        data = client.get(f"/summary?target_date={TODAY.isoformat()}").json()
+        assert data["phone_count"] == 0
+        assert data["phone_min"] == 0
 
 
 class TestTimelineEndpoint:
@@ -161,6 +225,25 @@ class TestProductivityEndpoint:
         # must be excluded. Allow some slack for trailing-end calc.
         assert 55 <= today_entry["at_desk_min"] <= 70
 
+    def test_break_total_and_phone_min_in_productivity(self, client):
+        # Inputs the frontend needs to compute focus_ratio per day.
+        # ~1h at_desk, ~30 min break, ~30 min phone → focus_ratio ~0.5.
+        rows = [
+            (_ts(9, 0),   "at_desk"),
+            (_ts(10, 0),  "phone"),
+            (_ts(10, 30), "at_desk"),
+            (_ts(11, 0),  "away"),
+            (_ts(11, 30), "at_desk"),    # end-of-day for the test
+        ]
+        seed_events(client.database, rows)
+        data = client.get("/productivity?days=1").json()
+        today_entry = data[0]
+
+        # Phone (10:00–10:30) and away/break (11:00–11:30) should both
+        # be ~30 min each.
+        assert 25 <= today_entry["phone_min"] <= 35
+        assert 25 <= today_entry["break_total_min"] <= 35
+
     def test_response_shape(self, client):
         data = client.get("/productivity?days=3").json()
         for entry in data:
@@ -168,6 +251,7 @@ class TestProductivityEndpoint:
                 "date", "break_count",
                 "short_break_count", "long_break_count",
                 "lunch_duration_min", "at_desk_min",
+                "break_total_min", "phone_min",
             }
             assert required <= entry.keys()
 

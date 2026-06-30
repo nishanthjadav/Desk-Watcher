@@ -32,6 +32,13 @@ MIN_RETURN_S = 180
 # threshold is its own DB row, but a human would call it one sip.
 SIP_COALESCE_GAP_S = 90
 
+# Phone events logged within this window of each other count as one
+# session. Watcher heartbeats `phone` every ~10s while you're on your
+# phone, so a 70-minute scroll would otherwise show up as 420 "sessions."
+# A real new session is when you've genuinely put the phone down for at
+# least this long (default 2 minutes).
+PHONE_SESSION_GAP_S = 120
+
 
 LOCAL_TZ = datetime.now().astimezone().tzinfo
 
@@ -177,6 +184,46 @@ def _classify_absences(absences: list[dict]) -> list[dict]:
     return classified
 
 
+def _filter_events_outside_absences(events: list[Event], absences: list[dict]) -> list[Event]:
+    """
+    Remove non-`away` events that fall inside any real absence interval.
+
+    Why: if you're confirmed away from your desk between 2:33 and 3:21,
+    you can't have been sipping or on your phone in that window. Yet a
+    coworker walking past the camera can trigger a brief pose detection,
+    and the classifier might call it `sipping` or `phone`. Those events
+    should not appear on the dashboard.
+
+    Filtering at the events level means the timeline, sip count, phone
+    count, and at-desk totals all stay consistent — they all run off
+    the same filtered list. The raw events stay in the DB for forensics.
+
+    Note: `away` events are NEVER filtered. They define the absence
+    intervals themselves; removing them would break _pair_absences on
+    the next call.
+    """
+    if not absences:
+        return events
+    # Only real absences count — `noise` segments (sub-NOISE_FLOOR) get
+    # the user-walked-past treatment as part of the existing noise floor,
+    # so we don't want to suppress events inside those.
+    real_intervals = [
+        (a["start"], a["end"])
+        for a in absences
+        if a.get("category") != "noise"
+    ]
+    if not real_intervals:
+        return events
+
+    def in_any_interval(ts) -> bool:
+        for start, end in real_intervals:
+            if start <= ts < end:
+                return True
+        return False
+
+    return [e for e in events if e.activity == "away" or not in_any_interval(e.timestamp)]
+
+
 @app.get("/events")
 def get_events(target_date: str | None = None, db: Session = Depends(get_db)):
     day = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else date.today()
@@ -217,6 +264,30 @@ def _coalesce_sips(events: list[Event], gap_s: int = SIP_COALESCE_GAP_S) -> int:
     return drinks
 
 
+def _coalesce_phone_sessions(events: list[Event], gap_s: int = PHONE_SESSION_GAP_S) -> int:
+    """
+    Count distinct phone sessions, not raw `phone` events.
+
+    Same chain semantics as _coalesce_sips: consecutive phone rows within
+    `gap_s` of the previous phone row belong to the same session. A new
+    session begins when you've been off your phone for at least gap_s.
+
+    Watcher heartbeats `phone` every ~10s while the activity persists, so
+    a 70-minute scroll produces ~420 rows but counts as 1 session.
+    """
+    phone_times = [e.timestamp for e in events if e.activity == "phone"]
+    if not phone_times:
+        return 0
+
+    sessions = 1
+    prev = phone_times[0]
+    for ts in phone_times[1:]:
+        if (ts - prev).total_seconds() > gap_s:
+            sessions += 1
+        prev = ts
+    return sessions
+
+
 def _activity_seconds(events: list[Event], day: date, activity: str) -> float:
     if not events:
         return 0.0
@@ -238,10 +309,16 @@ def get_summary(target_date: str | None = None, db: Session = Depends(get_db)):
     day = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else date.today()
     events = _events_for_day(db, day)
 
-    sip_count = _coalesce_sips(events)
-    phone_count = sum(1 for e in events if e.activity == "phone")
-    phone_seconds = _activity_seconds(events, day, "phone")
+    # Compute absences first, then drop spurious in-absence events so the
+    # downstream counts (sips, phone sessions, phone duration) reflect
+    # only things that actually could have happened.
     absences = _classify_absences(_pair_absences(events, day))
+    events = _filter_events_outside_absences(events, absences)
+
+    sip_count = _coalesce_sips(events)
+    phone_session_count = _coalesce_phone_sessions(events)
+    phone_seconds = _activity_seconds(events, day, "phone")
+    phone_avg_session_s = (phone_seconds / phone_session_count) if phone_session_count else 0
 
     by_cat: dict[str, list[dict]] = {
         "short_break": [], "long_break": [], "lunch": [], "noise": [],
@@ -265,8 +342,9 @@ def get_summary(target_date: str | None = None, db: Session = Depends(get_db)):
     return {
         "date": day.isoformat(),
         "sip_count": sip_count,
-        "phone_count": phone_count,
+        "phone_count": phone_session_count,
         "phone_min": round(phone_seconds / 60, 1),
+        "phone_avg_session_min": round(phone_avg_session_s / 60, 1),
         "short_break_count": len(by_cat["short_break"]),
         "long_break_count": len(by_cat["long_break"]),
         "break_count": len(real_breaks),
@@ -286,6 +364,14 @@ def get_timeline(target_date: str | None = None, db: Session = Depends(get_db)):
 
     day = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else date.today()
     events = _events_for_day(db, day)
+    if not events:
+        return {"date": day.isoformat(), "segments": []}
+
+    # Drop spurious non-away events that fall inside a real absence (e.g.
+    # a coworker triggering pose detection during your lunch break). Same
+    # treatment as /summary so the bar matches the breaks list.
+    absences = _classify_absences(_pair_absences(events, day))
+    events = _filter_events_outside_absences(events, absences)
     if not events:
         return {"date": day.isoformat(), "segments": []}
 
@@ -339,8 +425,9 @@ def get_weekly_summary(db: Session = Depends(get_db)):
     for i in range(5):
         day = monday + timedelta(days=i)
         events = _events_for_day(db, day)
-        sip_count = _coalesce_sips(events)
         absences = _classify_absences(_pair_absences(events, day))
+        events = _filter_events_outside_absences(events, absences)
+        sip_count = _coalesce_sips(events)
         short_break = sum(1 for a in absences if a["category"] == "short_break")
         long_break = sum(1 for a in absences if a["category"] == "long_break")
         lunch = next((a for a in absences if a["category"] == "lunch"), None)
@@ -366,10 +453,21 @@ def get_productivity(days: int = 90, db: Session = Depends(get_db)):
         day = today - timedelta(days=i)
         events = _events_for_day(db, day)
         absences = _classify_absences(_pair_absences(events, day))
+        events = _filter_events_outside_absences(events, absences)
         short_break = sum(1 for a in absences if a["category"] == "short_break")
         long_break = sum(1 for a in absences if a["category"] == "long_break")
         lunch = next((a for a in absences if a["category"] == "lunch"), None)
 
+        # Total minutes off-desk for the day. Includes lunch, short_break,
+        # long_break. Excludes `noise` absences (sub-NOISE_FLOOR detection
+        # glitches). Used by the frontend to compute the focus ratio.
+        break_total_s = sum(
+            a["duration_s"] for a in absences if a.get("category") != "noise"
+        )
+
+        # Total minutes on phone for the day. Walks segments the same way
+        # the live /summary does.
+        phone_s = _activity_seconds(events, day, "phone")
 
         at_desk_s = 0.0
         for j, e in enumerate(events):
@@ -390,6 +488,8 @@ def get_productivity(days: int = 90, db: Session = Depends(get_db)):
             "long_break_count": long_break,
             "lunch_duration_min": round(lunch["duration_s"] / 60, 1) if lunch else None,
             "at_desk_min": round(at_desk_s / 60, 1),
+            "break_total_min": round(break_total_s / 60, 1),
+            "phone_min": round(phone_s / 60, 1),
         })
 
     return out

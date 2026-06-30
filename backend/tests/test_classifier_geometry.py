@@ -7,7 +7,10 @@ axis confusion). These tests pin the contract down.
 Numeric thresholds we're testing against (from classifier.py):
   is_head_down:          nose_y - ear_y > 0.025  AND  shoulder_y - nose_y < 0.18
   wrists_low_and_close:  both (wy - shoulder_y) > 0.15  AND  |lw_x - rw_x| < 0.15
-  is_sipping:            min(left_wrist_to_nose, right_wrist_to_nose) < 0.15
+  is_sipping:            closer wrist within 0.12 of nose  AND  that wrist at
+                         least 0.02 BELOW the nose (in image y, where y grows
+                         downward). The directional check is what excludes
+                         nose-scratches, glasses-adjusts, forehead-rubs.
 """
 from __future__ import annotations
 
@@ -118,6 +121,38 @@ class TestIsSipping:
             right_wrist=(0.70, 0.65),
         )
         assert is_sipping(lm) is True
+
+    def test_nose_scratch_is_not_sipping(self):
+        # Regression: scratching the nose puts the wrist directly AT the
+        # nose. The old Euclidean-only check fired sip on this; the
+        # below-nose directional check rejects it because the wrist is
+        # at the nose, not below the mouth.
+        lm = make_landmarks(
+            nose=(0.50, 0.30),
+            left_wrist=(0.30, 0.65),
+            right_wrist=(0.50, 0.30),   # right at the nose
+        )
+        assert is_sipping(lm) is False
+
+    def test_glasses_adjust_is_not_sipping(self):
+        # Wrist at temple/forehead height — ABOVE the nose. Cannot be a sip.
+        lm = make_landmarks(
+            nose=(0.50, 0.30),
+            left_wrist=(0.30, 0.65),
+            right_wrist=(0.50, 0.22),
+        )
+        assert is_sipping(lm) is False
+
+    def test_wrist_near_ear_at_nose_height_is_not_sipping(self):
+        # Off to the side at nose height — not a face-to-mouth move.
+        # Catches "hand-on-ear" / phone-against-ear-like geometries that
+        # the old radius-only check accepted.
+        lm = make_landmarks(
+            nose=(0.50, 0.30),
+            left_wrist=(0.30, 0.65),
+            right_wrist=(0.60, 0.30),
+        )
+        assert is_sipping(lm) is False
 
 
 # ── HeadDownTracker ───────────────────────────────────────────────────────

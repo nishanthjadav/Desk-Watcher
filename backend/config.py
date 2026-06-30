@@ -21,7 +21,7 @@ class Config:
     pose_model_path: str = os.getenv("POSE_MODEL_PATH", "models/pose_landmarker_lite.task")
 
     phone_model_path: str = os.getenv("PHONE_MODEL_PATH", "models/yolov8n.pt")
-    phone_conf_threshold: float = float(os.getenv("PHONE_CONF_THRESHOLD", "0.20"))
+    phone_conf_threshold: float = float(os.getenv("PHONE_CONF_THRESHOLD", "0.40"))
     
     frames_between_phone_runs: int = int(os.getenv("PHONE_DETECT_EVERY_N_FRAMES", "6"))
 

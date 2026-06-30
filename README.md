@@ -73,3 +73,5 @@ Covers the pose geometry helpers, absence categorization, timeline merging, time
 ## Status
 
 Phone detection, dashboard, and test suite are in. To-do: close the ML loop, labeling tool, self-labeled training data, and a sequence model (LSTM or 1D-CNN) to replace the rule-based classifier as the primary path. Aside from ML stuff, want to add mouse tracking + calendar syncing for improved productivity accuracy.
+
+Packaging the whole thing as a single-install Tauri desktop app — see [docs/packaging-plan.md](docs/packaging-plan.md).

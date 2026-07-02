@@ -27,10 +27,21 @@ const SHOT_PINS = { w: 751, h: 874 };
     </p>
 
     <div class="mt-8 flex flex-wrap items-center gap-3">
+      {/* Primary CTA. Disabled until the win+mac installers ship — flip to */}
+      {/* an <a href=...> with the release URL when the builds are ready.  */}
+      <button
+        type="button"
+        disabled
+        aria-disabled="true"
+        title="Installer coming soon"
+        class="bg-amber-600/40 text-ink-950/70 px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2 cursor-not-allowed"
+      >
+        download <span class="text-ink-950/60 normal-case tracking-normal font-normal">— coming soon</span>
+      </button>
       <a
         href={GH}
         rel="noopener"
-        class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
+        class="text-2xs uppercase tracking-[0.16em] text-ink-200 hover:text-ink-100 hover:bg-ink-850 transition-colors px-4 py-2 border border-ink-700 inline-flex items-center gap-2"
       >
         view on github <span aria-hidden="true">→</span>
       </a>
@@ -178,10 +189,19 @@ const SHOT_PINS = { w: 751, h: 874 };
         dashboard. takes about three minutes if your toolchain's awake.
       </p>
       <div class="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          disabled
+          aria-disabled="true"
+          title="Installer coming soon"
+          class="bg-amber-600/40 text-ink-950/70 px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2 cursor-not-allowed"
+        >
+          download <span class="text-ink-950/60 normal-case tracking-normal font-normal">— coming soon</span>
+        </button>
         <a
           href={GH}
           rel="noopener"
-          class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
+          class="text-2xs uppercase tracking-[0.16em] text-ink-200 hover:text-ink-100 hover:bg-ink-850 transition-colors px-4 py-2 border border-ink-700 inline-flex items-center gap-2"
         >
           view on github <span aria-hidden="true">→</span>
         </a>

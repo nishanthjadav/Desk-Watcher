@@ -15,11 +15,16 @@ const ogPath = resolve(here, "..", "public", "og.png");
 const heroShot = "overall-dashboard.png";
 
 if (!existsSync(src)) {
-  console.error(`[sync-screenshots] source not found: ${src}`);
-  console.error(
-    "Drop your dashboard screenshots into /screenshots at the repo root and try again."
+  // On Vercel (Root Directory=site) the repo-root /screenshots folder is not
+  // uploaded, so `src` won't exist. That's fine — the tracked copies in
+  // site/public/screenshots/ are what the build actually serves. Skip and
+  // let `astro build` continue. Locally, if a dev deletes /screenshots on
+  // purpose, they'll notice the stale-copies warning below.
+  console.warn(
+    `[sync-screenshots] source not found: ${src} — skipping sync ` +
+      `(using tracked copies in site/public/screenshots/).`
   );
-  process.exit(1);
+  process.exit(0);
 }
 
 mkdirSync(dstDir, { recursive: true });

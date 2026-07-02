@@ -1,0 +1,6 @@
+# Build-time only. The runtime deps in backend/requirements.txt aren't
+# repeated here — PyInstaller inspects the currently-active Python interpreter
+# and pulls whatever is installed. Keep this file limited to the tools that
+# turn source into artifacts.
+
+pyinstaller>=6.11,<7

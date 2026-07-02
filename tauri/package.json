@@ -1,0 +1,14 @@
+{
+  "name": "desk-watcher-tauri",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri wrapper around the desk-watcher frontend and Python sidecars",
+  "scripts": {
+    "tauri": "tauri",
+    "build": "tauri build",
+    "dev": "tauri dev"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

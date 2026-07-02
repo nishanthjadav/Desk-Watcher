@@ -2,6 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Panel } from "./components/Panel";
 import { PinPicker, TileGrid, usePinControls } from "./components/TileGrid";
+import { WorkHoursSelect } from "./components/WorkHoursSelect";
+import { useRefutations, type Refutation } from "./hooks/useRefutations";
+import { useWorkHours } from "./hooks/useWorkHours";
+import {
+  applySummaryRefutations,
+  applyTimelineRefutations,
+  applyTodayProductivityRefutations,
+} from "./refutations";
 import type {
   Absence,
   Category,
@@ -12,7 +20,11 @@ import type {
   TimelineResp,
 } from "./types";
 
-const API = "http://localhost:8000";
+// In dev (`npm run dev`) the FastAPI server sits on :8000, matching the
+// old README instructions. The Tauri build sets VITE_API_URL to the
+// packaged uvicorn sidecar's port (127.0.0.1:8765) via `.env.production`,
+// so the same App.tsx works in both worlds.
+const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const POLL_MS = 30_000;
 
 type HeatmapRange = "year" | "6m" | "month";
@@ -103,6 +115,11 @@ function useFetch<T>(url: string, pollMs?: number) {
   const [data, setData] = useState<T | null>(null);
   useEffect(() => {
     let cancelled = false;
+    // Clear on url change so consumers show the "loading" placeholder
+    // instead of flashing stale data under new labels (e.g. when the
+    // user changes work hours, we don't want the old numbers to linger
+    // for the 200ms until the new response arrives).
+    setData(null);
     const tick = () => {
       fetch(url)
         .then((r) => r.json())
@@ -130,14 +147,20 @@ function CategoryBadge({ category }: { category: Category }) {
   );
 }
 
-function DayTimeline({ data }: { data: TimelineResp | null }) {
+function DayTimeline({
+  data,
+  startHour,
+  endHour,
+}: {
+  data: TimelineResp | null;
+  startHour: number;
+  endHour: number;
+}) {
   if (!data || data.segments.length === 0) {
     return <div className="px-4 py-6 text-ink-400 text-sm">No activity recorded yet.</div>;
   }
 
-  // Hard-pin the visible window to the workday: 8a–4p local time. Period.
-  const startHour = 8;
-  const endHour = 16;
+  // Visible window comes from the top-bar work-hours selector (default 9a–5p).
   const visibleHours = endHour - startHour;
 
   // Local midnight for the day this timeline is showing (derived from the
@@ -908,29 +931,92 @@ function LunchChart({ data, range }: { data: ProductivityDay[] | null; range: Lu
   );
 }
 
-function BreaksList({ absences }: { absences: Absence[] }) {
-  if (absences.length === 0) {
+function BreaksList({
+  absences,
+  refutations,
+  onRefute,
+  onUnrefute,
+}: {
+  absences: Absence[];
+  refutations: Refutation[];
+  onRefute: (a: Absence) => void;
+  onUnrefute: (start: string) => void;
+}) {
+  // `absences` arrives already filtered to non-refuted rows — the
+  // parent runs the summary transform before it reaches us. `refutations`
+  // is the parallel list of what the user has refuted today, used to
+  // render the small "Refuted (N)" footer beneath the table.
+  const hasBreaks = absences.length > 0;
+  const hasRefutations = refutations.length > 0;
+
+  if (!hasBreaks && !hasRefutations) {
     return <div className="px-4 py-6 text-ink-400 text-sm">No breaks logged today.</div>;
   }
+
   const sorted = [...absences].sort((a, b) => a.start.localeCompare(b.start));
+  const sortedRefutations = [...refutations].sort((a, b) => a.start.localeCompare(b.start));
+
   return (
     <div>
-      <div className="px-4 py-2 flex items-center gap-4 text-2xs uppercase tracking-[0.16em] text-ink-400 border-b border-ink-700 bg-ink-850">
-        <span className="w-32">When</span>
-        <span className="w-16">Duration</span>
-        <span>Category</span>
-      </div>
-      <div className="divide-y divide-ink-800">
-        {sorted.map((a, i) => (
-          <div key={i} className="px-4 py-2.5 flex items-center gap-4 text-sm">
-            <span className="font-mono text-ink-200 tabular w-32">
-              {fmtClock(a.start)}<span className="text-ink-500"> → </span>{fmtClock(a.end)}
-            </span>
-            <span className="font-mono text-ink-100 tabular w-16">{fmtDuration(a.duration_min)}</span>
-            <CategoryBadge category={a.category} />
+      {hasBreaks && (
+        <>
+          <div className="px-4 py-2 flex items-center gap-4 text-2xs uppercase tracking-[0.16em] text-ink-400 border-b border-ink-700 bg-ink-850">
+            <span className="w-32">When</span>
+            <span className="w-16">Duration</span>
+            <span className="flex-1">Category</span>
           </div>
-        ))}
-      </div>
+          <div className="divide-y divide-ink-800">
+            {sorted.map((a) => (
+              <div key={a.start} className="px-4 py-2.5 flex items-center gap-4 text-sm">
+                <span className="font-mono text-ink-200 tabular w-32">
+                  {fmtClock(a.start)}<span className="text-ink-500"> → </span>{fmtClock(a.end)}
+                </span>
+                <span className="font-mono text-ink-100 tabular w-16">{fmtDuration(a.duration_min)}</span>
+                <span className="flex-1"><CategoryBadge category={a.category} /></span>
+                {a.category === "long_break" && (
+                  <button
+                    type="button"
+                    onClick={() => onRefute(a)}
+                    title="Not really a break — mark this time as productive (e.g. an in-person meeting)."
+                    className="text-2xs lowercase text-ink-400 hover:text-amber-400 transition-colors"
+                  >
+                    not a break
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {hasRefutations && (
+        <div className="border-t border-ink-800 bg-ink-900/50">
+          <div className="px-4 py-2 flex items-center gap-4 text-2xs uppercase tracking-[0.16em] text-ink-500">
+            <span>Refuted ({refutations.length})</span>
+            <span className="text-ink-600 normal-case tracking-normal">
+              counted as productive time
+            </span>
+          </div>
+          <div className="divide-y divide-ink-800">
+            {sortedRefutations.map((r) => (
+              <div key={r.start} className="px-4 py-2 flex items-center gap-4 text-2xs text-ink-500">
+                <span className="font-mono tabular w-32">
+                  {fmtClock(r.start)}<span className="text-ink-700"> → </span>{fmtClock(r.end)}
+                </span>
+                <span className="font-mono tabular w-16">{fmtDuration(r.duration_min)}</span>
+                <span className="flex-1">refuted</span>
+                <button
+                  type="button"
+                  onClick={() => onUnrefute(r.start)}
+                  className="text-2xs lowercase text-ink-500 hover:text-amber-400 transition-colors"
+                >
+                  undo
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -941,6 +1027,7 @@ export default function App() {
   const [lunchRange, setLunchRange] = useState<LunchRange>("week");
   const lunchCfg = LUNCH_RANGES.find((r) => r.value === lunchRange)!;
   const pinControls = usePinControls();
+  const { hours, setHours } = useWorkHours();
 
   // The heatmap and the lunch chart both consume `/productivity`. Fetch
   // ONCE with the larger window so neither ends up data-starved when the
@@ -948,11 +1035,41 @@ export default function App() {
   // the worst case is two consumers fighting over a year of data.
   const productivityDays = Math.max(heatmapCfg.days, lunchCfg.days);
 
-  const summary = useFetch<Summary>(`${API}/summary`, POLL_MS);
-  const timeline = useFetch<TimelineResp>(`${API}/timeline`, POLL_MS);
-  const productivity = useFetch<ProductivityDay[]>(`${API}/productivity?days=${productivityDays}`, POLL_MS);
+  // Work hours ride along on every fetch so the backend clips durations
+  // and lunch-window detection to the user's actual workday. Whenever
+  // `hours` changes the URL string changes, useFetch re-runs, and we
+  // clear stale data during the reload.
+  const hoursQuery = `start_hour=${hours.startHour}&end_hour=${hours.endHour}`;
 
-  const today = summary?.date ? new Date(summary.date + "T00:00:00") : new Date();
+  const summary = useFetch<Summary>(`${API}/summary?${hoursQuery}`, POLL_MS);
+  const timeline = useFetch<TimelineResp>(`${API}/timeline?${hoursQuery}`, POLL_MS);
+  const productivity = useFetch<ProductivityDay[]>(
+    `${API}/productivity?days=${productivityDays}&${hoursQuery}`,
+    POLL_MS
+  );
+
+  // Refutations are scoped to today's date. When there is no summary
+  // yet (first render, or offline backend), the hook returns an empty
+  // list — the transforms below are no-ops in that case.
+  const { refutations, refute, unrefute } = useRefutations(summary?.date);
+
+  // Apply refutations to every downstream data source. Memoized so
+  // consumers that read the identity of `summary`/`timeline`/`productivity`
+  // don't rerender when nothing meaningful changed.
+  const refutedSummary = useMemo(
+    () => applySummaryRefutations(summary, refutations),
+    [summary, refutations]
+  );
+  const refutedTimeline = useMemo(
+    () => applyTimelineRefutations(timeline, refutations),
+    [timeline, refutations]
+  );
+  const refutedProductivity = useMemo(
+    () => applyTodayProductivityRefutations(productivity, refutations, summary?.date),
+    [productivity, refutations, summary?.date]
+  );
+
+  const today = refutedSummary?.date ? new Date(refutedSummary.date + "T00:00:00") : new Date();
   const dateLabel = today.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
   const clock = useClock();
   // Live clock in the header — 12-hour with seconds, lowercase a/p suffix.
@@ -992,13 +1109,33 @@ export default function App() {
             </button>
           </div>
           <section className="border border-ink-700 bg-ink-900">
-            <TileGrid inputs={{ summary, timeline, productivity }} controls={pinControls} />
+            <TileGrid
+              inputs={{
+                summary: refutedSummary,
+                timeline: refutedTimeline,
+                productivity: refutedProductivity,
+              }}
+              controls={pinControls}
+            />
           </section>
         </div>
 
         {/* Timeline */}
-        <Panel title="Today" right={timeline?.date} collapsibleId="timeline">
-          <DayTimeline data={timeline} />
+        <Panel
+          title="Today"
+          right={
+            <span className="inline-flex items-baseline gap-3">
+              <WorkHoursSelect hours={hours} onChange={setHours} />
+              <span>{refutedTimeline?.date}</span>
+            </span>
+          }
+          collapsibleId="timeline"
+        >
+          <DayTimeline
+            data={refutedTimeline}
+            startHour={hours.startHour}
+            endHour={hours.endHour}
+          />
         </Panel>
 
         {/* Two-column row: heatmap (2/3) + lunch chart (1/3) side by side. */}
@@ -1030,7 +1167,7 @@ export default function App() {
             className="lg:col-span-2"
             collapsibleId="productivity"
           >
-            <ProductivityHeatmap data={productivity} range={heatmapRange} />
+            <ProductivityHeatmap data={refutedProductivity} range={heatmapRange} />
           </Panel>
 
           <Panel
@@ -1059,17 +1196,22 @@ export default function App() {
             }
             collapsibleId="lunch"
           >
-            <LunchChart data={productivity} range={lunchRange} />
+            <LunchChart data={refutedProductivity} range={lunchRange} />
           </Panel>
         </div>
 
         {/* Breaks list */}
         <Panel
           title="Breaks today"
-          right={summary ? `${summary.break_count} total` : ""}
+          right={refutedSummary ? `${refutedSummary.break_count} total` : ""}
           collapsibleId="breaks"
         >
-          <BreaksList absences={summary?.absences ?? []} />
+          <BreaksList
+            absences={refutedSummary?.absences ?? []}
+            refutations={refutations}
+            onRefute={refute}
+            onUnrefute={unrefute}
+          />
         </Panel>
 
 

@@ -1,0 +1,48 @@
+[package]
+name = "desk-watcher"
+version = "0.1.0"
+description = "Desk Watcher desktop app"
+authors = ["Nishanth Jadav"]
+edition = "2021"
+rust-version = "1.77"
+
+# Tauri wants the app compiled as both a library (consumed by mobile shims)
+# and a binary — the binary is a thin `fn main()` that calls into the lib.
+# This is the layout `tauri-cli` expects; deviating breaks `tauri build`.
+[lib]
+name = "desk_watcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Blocking reqwest for the healthz readiness poll — no async runtime needed
+# for a single 30-attempt loop.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+# Windows-only: Job Object API. PyInstaller onedir on Windows launches a
+# bootloader exe that spawns a child Python process. If the parent Tauri
+# process dies unexpectedly (crash, Task Manager kill), std::process::Child
+# alone will not clean up those grandchildren. Assigning them to a Job
+# Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE means Windows itself
+# reaps them when our handle is dropped.
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+]
+
+[profile.release]
+# Standard Tauri release profile: LTO on, single codegen unit, stripped
+# symbols. Halves the binary size at the cost of ~40% longer compile.
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

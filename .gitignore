@@ -1,0 +1,78 @@
+# =====================
+# Node
+# =====================
+node_modules/
+**/node_modules/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =====================
+# Frontend build output
+# =====================
+frontend/dist/
+
+# =====================
+# Rust / Tauri
+# =====================
+tauri/target/
+tauri/src-tauri/target/
+
+tauri/src-tauri/gen/
+
+# Rust build artifacts
+**/target/
+
+# =====================
+# Python
+# =====================
+__pycache__/
+*.py[cod]
+*$py.class
+
+.venv/
+venv/
+env/
+
+# =====================
+# IDE
+# =====================
+.vscode/
+.idea/
+
+# =====================
+# OS
+# =====================
+.DS_Store
+Thumbs.db
+
+# =====================
+# Logs
+# =====================
+*.log
+
+# =====================
+# Environment secrets
+# =====================
+.env
+.env.*
+
+# =====================
+# Temporary files
+# =====================
+*.tmp
+*.swp
+*.bak
+
+# =====================
+# Keep packaged executables
+# =====================
+!packaging/dist/
+!tauri/src-tauri/binaries/
+
+# Tauri bundled binaries
+tauri/src-tauri/binaries/
+
+# Build artifacts
+frontend/dist/

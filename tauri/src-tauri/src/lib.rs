@@ -251,7 +251,7 @@ pub fn run() {
                             eprintln!("job.assign(watcher): {e}");
                         }
                     }
-                }
+                };
             }
 
             let state = handle.state::<SidecarState>();

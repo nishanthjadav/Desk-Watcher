@@ -32,10 +32,10 @@
     "icon": [
       "icons/icon.ico"
     ],
-    "resources": {
-      "binaries/watcher/**/*": "binaries/watcher/",
-      "binaries/api/**/*": "binaries/api/"
-    },
+    "resources": [
+      "binaries/watcher/",
+      "binaries/api/"
+    ],
     "copyright": "",
     "category": "Productivity",
     "shortDescription": "Camera-driven desk activity dashboard",

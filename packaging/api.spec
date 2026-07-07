@@ -1,32 +1,25 @@
-# PyInstaller spec for the api sidecar.
-#
-# Entry point is backend/api_entry.py which imports the FastAPI app and
-# runs uvicorn against it on 127.0.0.1:8765. See that file for why it
-# exists (string-lookup import doesn't work when frozen).
-
-# ruff: noqa
-# type: ignore
-
 import os
+
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 BACKEND_DIR = os.path.abspath(os.path.join(SPECPATH, "..", "backend"))
 
-# uvicorn loads its lifespan / http / ws implementation modules by string,
-# and FastAPI pulls in Pydantic v2's Rust core via a dynamic extension.
-hidden = (
-    collect_submodules("uvicorn")
-    + collect_submodules("uvicorn.lifespan")
-    + collect_submodules("uvicorn.protocols")
-    + collect_submodules("uvicorn.loops")
-    + [
-        "starlette.routing",
-        "pydantic",
-        "pydantic_core",
-    ]
-)
+hidden = [
+    "sqlalchemy",
+    "sqlalchemy.sql.default_comparator",
+    "psycopg2",
+    "dotenv",
+]
 
-datas = collect_data_files("uvicorn") + collect_data_files("fastapi")
+hidden += collect_submodules("fastapi")
+hidden += collect_submodules("uvicorn")
+hidden += collect_submodules("starlette")
+hidden += collect_submodules("sqlalchemy")
+
+datas = []
+datas += collect_data_files("fastapi")
+datas += collect_data_files("uvicorn")
+
 
 a = Analysis(
     [os.path.join(BACKEND_DIR, "api_entry.py")],
@@ -38,8 +31,6 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Same story as watcher.spec — the ML deps aren't needed for the
-        # API-only sidecar. Excluding them cuts the api dist by ~90%.
         "torch",
         "torchvision",
         "mediapipe",
@@ -52,6 +43,7 @@ a = Analysis(
     ],
     noarchive=False,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -60,23 +52,14 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="api",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
     console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
 )
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
     strip=False,
     upx=False,
-    upx_exclude=[],
     name="api",
 )

@@ -35,6 +35,18 @@ ultra_datas = collect_data_files("ultralytics")
 torch_bins = collect_dynamic_libs("torch")
 torch_datas = collect_data_files("torch")
 
+# scikit-learn / scipy: the activity classifier is a pickled sklearn Pipeline
+# (StandardScaler + RandomForest). Unpickling pulls in submodules
+# (sklearn.ensemble._forest, sklearn.tree._*, scipy internals) via dynamic
+# imports that PyInstaller's static analysis cannot see. Hand-listing them is
+# whack-a-mole — one missing module crashes the watcher at model-load with
+# ModuleNotFoundError. collect_submodules grabs the whole tree so any module
+# the pickle references at load time is present.
+sklearn_submods = collect_submodules("sklearn")
+sklearn_datas = collect_data_files("sklearn")
+scipy_submods = collect_submodules("scipy")
+scipy_datas = collect_data_files("scipy")
+
 # Ship our own model weights alongside so a first-run install has
 # everything it needs without a network call. The Rust supervisor's
 # first-run step copies these to %USERPROFILE%\.desk-watcher\models\
@@ -49,24 +61,23 @@ own_datas = [
 hidden = [
     "mediapipe.tasks.python.vision.pose_landmarker",
     "mediapipe.tasks.python.core.base_options",
-    "sklearn.utils._cython_blas",
-    "sklearn.neighbors._typedefs",
-    "sklearn.utils._weight_vector",
-] + ultra_submods
+] + ultra_submods + sklearn_submods + scipy_submods
 
 a = Analysis(
     [os.path.join(BACKEND_DIR, "watcher.py")],
     pathex=[BACKEND_DIR],
     binaries=torch_bins,
-    datas=mp_datas + ultra_datas + torch_datas + own_datas,
+    datas=mp_datas + ultra_datas + torch_datas + own_datas + sklearn_datas + scipy_datas,
     hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # These are dev/notebook deps we don't need at runtime and they
-        # bloat the bundle if PyInstaller pulls them in transitively.
-        "matplotlib",
+        # Dev/notebook deps not needed at runtime; excluding them keeps the
+        # bundle smaller. NOTE: matplotlib is deliberately NOT excluded —
+        # mediapipe imports it at package-init time (via
+        # mediapipe/tasks/python/vision/drawing_styles.py), so excluding it
+        # crashes the watcher on `import mediapipe` with ModuleNotFoundError.
         "IPython",
         "jupyter",
         "pytest",

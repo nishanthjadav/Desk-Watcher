@@ -3,6 +3,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import SessionLocal, Event
+import status as watcher_status
 
 app = FastAPI(title="Desk Watcher API")
 
@@ -31,6 +32,54 @@ def healthz():
     before uvicorn has bound its port.
     """
     return {"ok": True}
+
+
+# The watcher heartbeats its status every ~5s while healthy. If the newest
+# status is older than this, the watcher process has stopped writing (crashed,
+# hung, or was never started) — the dashboard treats that as a problem.
+STATUS_STALE_S = 30
+
+
+@app.get("/status")
+def get_status():
+    """
+    Report the watcher's health for the dashboard's status banner.
+
+    The watcher runs as a separate process and writes its state to a small
+    status file (see status.py); we read it here. Returns a stable shape
+    even when the file is absent (watcher still starting, or never launched):
+
+      camera_ok: true | false | null   (null = unknown / no status yet)
+      detail:    human-readable explanation for the banner
+      updated_at: iso8601 of the last watcher write, or null
+      stale:     true if the watcher hasn't written recently (or ever)
+    """
+    s = watcher_status.read_status()
+    if s is None:
+        return {
+            "camera_ok": None,
+            "detail": "Waiting for the watcher to start…",
+            "updated_at": None,
+            "stale": True,
+        }
+
+    updated_at = s.get("updated_at")
+    stale = True
+    if updated_at:
+        try:
+            ts = datetime.fromisoformat(updated_at)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            stale = (datetime.now(timezone.utc) - ts).total_seconds() > STATUS_STALE_S
+        except ValueError:
+            stale = True
+
+    return {
+        "camera_ok": s.get("camera_ok"),
+        "detail": s.get("detail", ""),
+        "updated_at": updated_at,
+        "stale": stale,
+    }
 
 
 NOISE_FLOOR_S = 60          # absences shorter than this are detection glitches, not breaks

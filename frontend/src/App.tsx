@@ -18,6 +18,7 @@ import type {
   Segment,
   Summary,
   TimelineResp,
+  WatcherStatus,
 } from "./types";
 
 // In dev (`npm run dev`) the FastAPI server sits on :8000, matching the
@@ -26,6 +27,9 @@ import type {
 // so the same App.tsx works in both worlds.
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const POLL_MS = 30_000;
+// Health signal — poll faster than the 30s data cadence so a camera problem
+// surfaces (and clears) within ~10s rather than half a minute.
+const STATUS_POLL_MS = 10_000;
 
 type HeatmapRange = "year" | "6m" | "month";
 
@@ -90,9 +94,13 @@ function fmtHour12(h: number): string {
 
 function fmtDuration(min: number): string {
   if (min < 1) return "<1m";
-  if (min < 60) return `${Math.round(min)}m`;
-  const h = Math.floor(min / 60);
-  const m = Math.round(min - h * 60);
+  // Round to whole minutes FIRST, then decompose. Rounding after the h/m
+  // split produced artifacts like "60m" (59.7 rounds up but stays < 60 in
+  // the branch check) and "1h 60m" (119.7 → h=1, round(59.7)=60).
+  const total = Math.round(min);
+  const h = Math.floor(total / 60);
+  const m = total - h * 60;
+  if (h === 0) return `${m}m`;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
@@ -573,27 +581,32 @@ function ProductivityHeatmap({ data, range }: { data: ProductivityDay[] | null; 
           <span>no data</span>
         </span>
         {/* Muted text affordance — explains the focus_ratio formula and
-            bucket thresholds on hover. Plain underlined text reads cleaner
-            here than a chip-bordered icon next to the legend swatches. */}
-        <span
-          className="ml-auto underline decoration-dotted underline-offset-2 text-ink-500 cursor-help"
-          title={
-            "Focus ratio = at-desk / (at-desk + breaks + 0.5 × phone)\n" +
-            "Phone is half-weighted: a glance during a build is meaningfully\n" +
-            "different from disappearing for 30 minutes. Bounded 0–100% and\n" +
-            "inherently normalized (a half-day and a full-day score on the\n" +
-            "same scale). Lunch counts against the ratio (it's time off your\n" +
-            "desk, however justified).\n\n" +
-            "Color buckets:\n" +
-            "  ≥ 65%   brightest amber: mostly focused\n" +
-            "  ≥ 45%   bright: focused with normal breaks\n" +
-            "  ≥ 30%   mid: meaningful break/phone time\n" +
-            "  ≥ 15%   dark: mostly off-task\n" +
-            "  < 15%   darkest: barely worked at desk\n\n" +
-            "Days with <30 min of at-desk time render as 'no data'."
-          }
-        >
-          how this is calculated
+            bucket thresholds on hover. Uses a CSS-only tooltip (not the
+            native `title` attribute) so it appears instantly instead of
+            after the browser's ~1s delay. Amber on hover signals it's an
+            interactive affordance without making it look like a button. */}
+        <span className="group relative ml-auto">
+          <span className="underline decoration-dotted underline-offset-2 text-ink-500 group-hover:text-amber-400 transition-colors cursor-help">
+            how this is calculated
+          </span>
+          <span
+            role="tooltip"
+            className="pointer-events-none absolute bottom-full right-0 mb-2 z-10 w-80 whitespace-pre-line rounded border border-ink-700 bg-ink-950 px-3 py-2 text-2xs text-ink-200 leading-relaxed opacity-0 group-hover:opacity-100 transition-opacity duration-75 shadow-lg"
+          >
+            {"Focus ratio = at-desk / (at-desk + breaks + 0.5 × phone)\n" +
+              "Phone is half-weighted: a glance during a build is meaningfully " +
+              "different from disappearing for 30 minutes. Bounded 0–100% and " +
+              "inherently normalized (a half-day and a full-day score on the " +
+              "same scale). Lunch counts against the ratio (it's time off your " +
+              "desk, however justified).\n\n" +
+              "Color buckets:\n" +
+              "  ≥ 65%   brightest amber: mostly focused\n" +
+              "  ≥ 45%   bright: focused with normal breaks\n" +
+              "  ≥ 30%   mid: meaningful break/phone time\n" +
+              "  ≥ 15%   dark: mostly off-task\n" +
+              "  < 15%   darkest: barely worked at desk\n\n" +
+              "Days with <30 min of at-desk time render as 'no data'."}
+          </span>
         </span>
       </div>
     </div>
@@ -1021,6 +1034,50 @@ function BreaksList({
   );
 }
 
+// Health banner shown ONLY when something is wrong — camera not active, or
+// the watcher process not reporting. When everything is healthy the banner
+// never appears (no "all good" noise). It clears on its own once `/status`
+// reports healthy again, since the watcher self-heals camera issues.
+//
+// Dismiss is per-session and keyed to the message, so a user can hide a
+// persistent warning; a different problem (new `detail`) re-shows it.
+function StatusBanner({ status }: { status: WatcherStatus | null }) {
+  const [dismissed, setDismissed] = useState<string | null>(null);
+
+  // Show a banner only for an actual problem:
+  //   camera_ok === false  → watcher reported the camera isn't working
+  //   stale === true       → watcher stopped reporting (crashed/never started)
+  // Everything else — healthy (camera_ok true & fresh), or still starting up
+  // (camera_ok null & fresh) — shows nothing.
+  const hasProblem = !!status && (status.camera_ok === false || status.stale === true);
+  if (!hasProblem) return null;
+
+  const message =
+    status!.camera_ok === false
+      ? status!.detail || "The camera isn't active."
+      : "The watcher isn't reporting. Check that it's running.";
+  if (dismissed === message) return null;
+
+  return (
+    <div
+      className="border-b border-ink-700 text-ink-100 text-sm"
+      style={{ backgroundColor: "#a04020" }}
+      role="status"
+    >
+      <div className="max-w-6xl mx-auto px-6 py-2 flex items-center gap-3">
+        <span className="flex-1">{message}</span>
+        <button
+          type="button"
+          onClick={() => setDismissed(message)}
+          className="text-2xs uppercase tracking-wider text-ink-200 hover:text-white transition-colors"
+        >
+          dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [heatmapRange, setHeatmapRange] = useState<HeatmapRange>("year");
   const heatmapCfg = HEATMAP_RANGES.find((r) => r.value === heatmapRange)!;
@@ -1047,6 +1104,7 @@ export default function App() {
     `${API}/productivity?days=${productivityDays}&${hoursQuery}`,
     POLL_MS
   );
+  const watcherStatus = useFetch<WatcherStatus>(`${API}/status`, STATUS_POLL_MS);
 
   // Refutations are scoped to today's date. When there is no summary
   // yet (first render, or offline backend), the hook returns an empty
@@ -1091,6 +1149,8 @@ export default function App() {
           <span className="font-mono text-ink-200 tabular text-sm">{clockLabel}</span>
         </div>
       </header>
+
+      <StatusBanner status={watcherStatus} />
 
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-6">
         {/* Metric strip — user-pinnable tiles from the metric catalog.

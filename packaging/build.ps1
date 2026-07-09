@@ -1,6 +1,13 @@
-# One-shot end-to-end build. Run from repo root:
+# One-shot Python+frontend prep. Invoked automatically by Tauri's
+# `beforeBuildCommand` (see tauri/src-tauri/tauri.conf.json), so the normal
+# way to produce an MSI is a single command from the repo root:
 #
-#   pwsh packaging/build.ps1
+#   cd tauri && npm run tauri build
+#
+# That runs this script first (steps 1-4 below), then Tauri archives the
+# staged sidecars into the MSI. You can also run this script standalone
+# (`pwsh packaging/build.ps1`) to re-freeze the sidecars without building
+# the MSI.
 #
 # Order of operations matters:
 #   1. Frontend must build BEFORE Tauri, because Tauri bundles frontend/dist/.
@@ -68,6 +75,34 @@ Copy-Item -Recurse "$RepoRoot\packaging\dist\watcher" "$BinDir\watcher"
 Write-Host "  → copying api onedir..." -ForegroundColor DarkGray
 Copy-Item -Recurse "$RepoRoot\packaging\dist\api" "$BinDir\api"
 
+# ── Staging verification ──────────────────────────────────────────────────
+# A killed/interrupted run (e.g. a build timeout mid-freeze) can leave the
+# freeze done but staging incomplete — Tauri would then silently archive
+# STALE binaries into the MSI, which is exactly the failure that shipped a
+# broken installer for days. Fail loudly here if the staged exes are missing
+# or are OLDER than the .spec that produced them (a sign the freeze didn't
+# actually re-run for a spec change).
+Write-Host "=== [verify] Checking staged sidecars are fresh ===" -ForegroundColor Cyan
+
+$checks = @(
+    @{ Name = "watcher"; Exe = "$BinDir\watcher\watcher.exe"; Spec = "$RepoRoot\packaging\watcher.spec" },
+    @{ Name = "api";     Exe = "$BinDir\api\api.exe";         Spec = "$RepoRoot\packaging\api.spec" }
+)
+
+foreach ($c in $checks) {
+    if (-not (Test-Path $c.Exe)) {
+        throw "STAGING FAILED: $($c.Name) sidecar missing at $($c.Exe). " +
+              "The freeze or copy did not complete — do NOT build the MSI, it would ship stale/absent binaries."
+    }
+    $exeTime = (Get-Item $c.Exe).LastWriteTime
+    $specTime = (Get-Item $c.Spec).LastWriteTime
+    if ($exeTime -lt $specTime) {
+        throw "STALE BINARY: $($c.Name).exe ($exeTime) is OLDER than $($c.Name).spec ($specTime). " +
+              "The freeze did not pick up the spec change. Re-run this script and let it finish."
+    }
+    Write-Host "  ✓ $($c.Name).exe is present and newer than its spec" -ForegroundColor DarkGreen
+}
+
 Write-Host ""
-Write-Host "=== [done] Sidecars staged. Next: cd tauri && npm run tauri build ===" -ForegroundColor Green
+Write-Host "=== [done] Sidecars staged and verified. Tauri will now archive them into the MSI. ===" -ForegroundColor Green
 Write-Host "MSI will land at: tauri\src-tauri\target\release\bundle\msi\*.msi"

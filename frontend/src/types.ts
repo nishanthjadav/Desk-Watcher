@@ -68,3 +68,13 @@ export interface ProductivityDay {
   break_total_min: number;   // sum of all real (non-noise) absence durations
   phone_min: number;
 }
+
+// Watcher health, from GET /status. Surfaced as a banner when something is
+// wrong (camera busy, watcher not running). `camera_ok` is null when the
+// watcher hasn't reported yet (still starting up).
+export interface WatcherStatus {
+  camera_ok: boolean | null;
+  detail: string;
+  updated_at: string | null;
+  stale: boolean;
+}

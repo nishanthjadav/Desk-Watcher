@@ -16,13 +16,18 @@
 //
 // All app logic lives in Python. This file is deliberately dumb.
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, WindowEvent};
+use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
+use tauri_plugin_dialog::DialogExt;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -109,6 +114,11 @@ struct SidecarState {
     // we can .take() and explicitly drop it during shutdown.
     #[cfg(windows)]
     job: Mutex<Option<job::Job>>,
+    // Whether the system tray built successfully. If it did, closing the
+    // window HIDES to tray (sidecars keep running); if it didn't, we fall
+    // back to close = full shutdown so the user is never stuck with an
+    // unquittable hidden process (no tray = no way to quit or reopen).
+    tray_ok: Mutex<bool>,
 }
 
 // Resolve the on-disk path of a sidecar exe inside the installed app's
@@ -144,13 +154,33 @@ fn spawn_sidecar(app: &tauri::AppHandle, name: &str) -> Result<Child, String> {
     let cwd = exe.parent().expect("sidecar exe has a parent").to_path_buf();
 
     let mut cmd = Command::new(&exe);
-    cmd.current_dir(&cwd)
-        // Suppress stdio: the sidecars print to their own console when
-        // `console=True` in their .spec, which we may want to flip off
-        // later. Piping to null keeps things quiet regardless.
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.current_dir(&cwd).stdin(Stdio::null());
+
+    // Redirect stdout+stderr to a per-sidecar log file so a failed install
+    // on someone else's machine leaves a diagnostic trail. Without this the
+    // sidecars' output went to the void and a crash was undebuggable. Falls
+    // back to null if the log file can't be opened — logging must never
+    // prevent the sidecar from launching.
+    match open_log_file(name) {
+        Ok(log) => {
+            // stderr needs its own handle; the two streams can't share one
+            // File (each Stdio takes ownership), so clone the OS handle.
+            let err = log.try_clone().map_err(|e| format!("clone log handle: {e}"));
+            cmd.stdout(Stdio::from(log));
+            match err {
+                Ok(err_file) => {
+                    cmd.stderr(Stdio::from(err_file));
+                }
+                Err(_) => {
+                    cmd.stderr(Stdio::null());
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("could not open {name} log ({e}); discarding sidecar output");
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
 
     // Windows: CREATE_NO_WINDOW hides the sidecar's console popup. The
     // .spec files still have console=True (useful for `tauri dev` in a
@@ -164,6 +194,69 @@ fn spawn_sidecar(app: &tauri::AppHandle, name: &str) -> Result<Child, String> {
 
     cmd.spawn()
         .map_err(|e| format!("spawn {name}: {e}"))
+}
+
+// Open (truncating) the log file for a sidecar at
+// %APPDATA%\desk-watcher\logs\{name}.log — the same desk-watcher appdata
+// folder the Python side uses for its DB and status file, so all diagnostics
+// live in one place. Truncate-on-open keeps logs to one session's worth
+// rather than growing unbounded across launches.
+fn log_dir() -> Result<PathBuf, String> {
+    // Match backend/config.py: Windows -> %APPDATA%, else a sensible home
+    // fallback. dirs/appdata via std env keeps us free of an extra crate.
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "APPDATA not set".to_string())?;
+    #[cfg(not(windows))]
+    let base = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".local/share"))
+        .ok_or_else(|| "HOME not set".to_string())?;
+
+    Ok(base.join("desk-watcher").join("logs"))
+}
+
+fn open_log_file(name: &str) -> Result<fs::File, String> {
+    let dir = log_dir()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("create log dir: {e}"))?;
+    let path = dir.join(format!("{name}.log"));
+    fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|e| format!("open {}: {e}", path.display()))
+}
+
+// Path to the small UI-state marker used for one-time prompts. Lives in the
+// same %APPDATA%\desk-watcher\ folder as the DB, logs, and status file.
+fn ui_state_dir() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "APPDATA not set".to_string())?;
+    #[cfg(not(windows))]
+    let base = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".local/share"))
+        .ok_or_else(|| "HOME not set".to_string())?;
+    Ok(base.join("desk-watcher"))
+}
+
+// Has the "we keep running in the tray" hint been shown before? We use a
+// sentinel file rather than a config store to stay dependency-free — its
+// mere existence is the flag.
+fn close_hint_shown() -> bool {
+    match ui_state_dir() {
+        Ok(dir) => dir.join(".close_hint_shown").exists(),
+        Err(_) => true, // if we can't tell, err toward NOT nagging
+    }
+}
+
+fn mark_close_hint_shown() {
+    if let Ok(dir) = ui_state_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join(".close_hint_shown"), b"1");
+    }
 }
 
 fn shutdown(state: &SidecarState) {
@@ -218,11 +311,20 @@ pub fn run() {
     let job = job::Job::new().expect("CreateJobObjectW must succeed");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        // Autostart: the `--hidden` arg is what a login-launched instance
+        // passes to itself, letting us detect "started at boot" and skip
+        // showing the window (see the readiness thread below).
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .manage(SidecarState {
             watcher: Mutex::new(None),
             api: Mutex::new(None),
             #[cfg(windows)]
             job: Mutex::new(Some(job)),
+            tray_ok: Mutex::new(false),
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -258,15 +360,33 @@ pub fn run() {
             *state.watcher.lock().unwrap() = Some(watcher_child);
             *state.api.lock().unwrap() = Some(api_child);
 
-            // Block on the readiness poll on a worker thread so we don't
-            // stall Tauri's main event loop. When the api is up, show the
-            // window; if it never comes up, show it anyway so the user can
-            // at least see the failure.
+            // ── System tray ────────────────────────────────────────────
+            // Build the tray icon + menu. If this fails, we record tray_ok
+            // = false so the close handler falls back to full shutdown
+            // instead of hiding into an unquittable state.
+            match build_tray(&handle) {
+                Ok(()) => {
+                    *state.tray_ok.lock().unwrap() = true;
+                }
+                Err(e) => {
+                    eprintln!("tray build failed ({e}); close will exit the app instead of hiding");
+                }
+            }
+
+            // ── Window reveal ──────────────────────────────────────────
+            // A login-launched instance passes `--hidden`; keep the window
+            // hidden (sidecars still run headless). Otherwise show it once
+            // the API is healthy so the user never sees a "failed to fetch"
+            // flash.
+            let launched_hidden = std::env::args().any(|a| a == "--hidden");
             let show_handle = handle.clone();
             thread::spawn(move || {
                 let ready = wait_for_api_ready();
                 if !ready {
                     eprintln!("api sidecar never returned healthy — showing window anyway");
+                }
+                if launched_hidden {
+                    return; // stay in the tray; user opens from the menu
                 }
                 if let Some(win) = show_handle.get_webview_window("main") {
                     let _ = win.show();
@@ -277,9 +397,32 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<SidecarState>();
-                shutdown(&state);
+                let tray_ok = state.tray_ok.lock().map(|g| *g).unwrap_or(false);
+
+                if tray_ok {
+                    // Close-to-background: keep the sidecars tracking, just
+                    // hide the window. Quit is explicit via the tray menu.
+                    api.prevent_close();
+                    let _ = window.hide();
+
+                    // First time only: tell the user it's still running so
+                    // they aren't surprised the camera stays active.
+                    if !close_hint_shown() {
+                        mark_close_hint_shown();
+                        window.app_handle().dialog()
+                            .message(
+                                "Desk Watcher keeps running in the background to track your day. \
+                                 Right-click the tray icon to open it again or to quit.",
+                            )
+                            .title("Still running in the tray")
+                            .blocking_show();
+                    }
+                } else {
+                    // No tray → hiding would strand the process. Full quit.
+                    shutdown(&state);
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -293,4 +436,86 @@ pub fn run() {
                 shutdown(&state);
             }
         });
+}
+
+// Build the system tray icon and its menu. Returns Err if the tray can't be
+// created — the caller falls back to close-to-exit so the app is never
+// unquittable.
+fn build_tray(app: &tauri::AppHandle) -> Result<(), String> {
+    let open = MenuItemBuilder::with_id("open", "Open Dashboard")
+        .build(app)
+        .map_err(|e| format!("open item: {e}"))?;
+
+    // Reflect the current autostart state in the checkbox.
+    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart = CheckMenuItemBuilder::with_id("autostart", "Start on login")
+        .checked(autostart_enabled)
+        .build(app)
+        .map_err(|e| format!("autostart item: {e}"))?;
+
+    let quit = MenuItemBuilder::with_id("quit", "Quit Desk Watcher")
+        .build(app)
+        .map_err(|e| format!("quit item: {e}"))?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&open)
+        .item(&autostart)
+        .separator()
+        .item(&quit)
+        .build()
+        .map_err(|e| format!("menu: {e}"))?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "no default window icon for tray".to_string())?;
+
+    TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
+        .tooltip("Desk Watcher")
+        .menu(&menu)
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+            "open" => show_main_window(app),
+            "quit" => {
+                let state = app.state::<SidecarState>();
+                shutdown(&state);
+                app.exit(0);
+            }
+            "autostart" => {
+                let mgr = app.autolaunch();
+                let now_enabled = mgr.is_enabled().unwrap_or(false);
+                let result = if now_enabled { mgr.disable() } else { mgr.enable() };
+                if let Err(e) = result {
+                    eprintln!("toggle autostart: {e}");
+                }
+                // Sync the checkbox to the real post-toggle state.
+                let _ = autostart.set_checked(mgr.is_enabled().unwrap_or(false));
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Left-click the icon → open the dashboard (Windows convention).
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)
+        .map_err(|e| format!("tray build: {e}"))?;
+
+    Ok(())
+}
+
+// Show, unminimize, and focus the main window — used by the tray "Open"
+// item and left-click.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
 }

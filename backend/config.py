@@ -25,9 +25,35 @@ def _resource(*parts: str) -> str:
     return os.path.join(_resource_dir(), *parts)
 
 
+def _default_db_path() -> str:
+    """
+    Per-platform location for the SQLite DB.
+
+    Frozen builds should write to the OS's per-user app-data directory so
+    the data lives where users (and uninstallers) expect it, not in the
+    home-directory root. Stdlib only — avoids adding a `platformdirs`
+    dependency that would also need wiring into the PyInstaller .specs.
+
+      Windows: %APPDATA%/desk-watcher/events.db
+      macOS:   ~/Library/Application Support/desk-watcher/events.db
+      Linux:   $XDG_DATA_HOME/desk-watcher/events.db (or ~/.local/share/...)
+    """
+    if sys.platform == "win32":
+        base = os.getenv("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "desk-watcher", "events.db")
+
+
 @dataclass
 class Config:
     camera_index: int = int(os.getenv("CAMERA_INDEX", "0"))
+    # Seconds to wait before retrying a failed camera open. The watcher's
+    # supervision loop keeps trying so it self-heals when whatever else was
+    # holding the camera (Teams, Zoom, the OS camera app) releases it.
+    camera_retry_s: float = float(os.getenv("CAMERA_RETRY_S", "5.0"))
     frame_width: int = 1280
     frame_height: int = 720
 
@@ -36,10 +62,15 @@ class Config:
 
     min_event_duration_s: float = 10.0
 
-    show_preview: bool = os.getenv("SHOW_PREVIEW", "true").lower() == "true"
+    # The OpenCV preview window (live camera feed with pose overlay) is a
+    # dev/debugging aid, not something a background productivity tracker
+    # should pop up. Default OFF so the packaged app watches silently in the
+    # background; set SHOW_PREVIEW=true to see the annotated feed while
+    # developing.
+    show_preview: bool = os.getenv("SHOW_PREVIEW", "false").lower() == "true"
     privacy_mode: bool = os.getenv("PRIVACY_MODE", "false").lower() == "true"
 
-    db_path: str = os.getenv("DB_PATH", os.path.expanduser("~/.desk-watcher/events.db"))
+    db_path: str = os.getenv("DB_PATH", _default_db_path())
     # Model paths default to <resource_dir>/models/... which resolves to
     # backend/models/ in dev and sys._MEIPASS/models/ in frozen builds.
     # An explicit env-var override still wins for both source and frozen

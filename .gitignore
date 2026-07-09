@@ -66,13 +66,24 @@ Thumbs.db
 *.bak
 
 # =====================
-# Keep packaged executables
+# Build output — all regenerated from source, never committed
 # =====================
-!packaging/dist/
-!tauri/src-tauri/binaries/
-
-# Tauri bundled binaries
+# Frontend (Vite)
+frontend/dist/
+# Site (Astro)
+site/dist/
+# PyInstaller freeze output + staged sidecars (each ~1.4 GB of torch/
+# mediapipe/etc). Rebuilt by packaging/build.ps1 on every `npm run tauri build`.
+packaging/build/
+packaging/dist/
 tauri/src-tauri/binaries/
 
-# Build artifacts
-frontend/dist/
+# =====================
+# Recorded session data — local captures, not source
+# =====================
+data/
+
+# =====================
+# MSI / installer output
+# =====================
+*.msi

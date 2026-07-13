@@ -5,6 +5,11 @@ import SectionFrame from "../components/SectionFrame.astro";
 // Hard-coded once; grep-and-replace if the repo ever moves.
 const GH = "https://github.com/nishanthjadav/desk-watcher";
 
+// Direct link to the latest Windows installer (GitHub Releases asset).
+// Bump the version tag here when a new release ships.
+const DOWNLOAD_URL =
+  "https://github.com/nishanthjadav/Desk-Watcher/releases/download/v0.1.0/Desk%20Watcher_0.1.0_x64_en-US.msi";
+
 // Real PNG dimensions, so the browser reserves the right space and the
 // page doesn't shift when the images load. Read from the source files
 // at plan time — update if you swap a screenshot in.
@@ -27,17 +32,14 @@ const SHOT_PINS = { w: 751, h: 874 };
     </p>
 
     <div class="mt-8 flex flex-wrap items-center gap-3">
-      {/* Primary CTA. Disabled until the win+mac installers ship — flip to */}
-      {/* an <a href=...> with the release URL when the builds are ready.  */}
-      <button
-        type="button"
-        disabled
-        aria-disabled="true"
-        title="Installer coming soon"
-        class="bg-amber-600/40 text-ink-950/70 px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2 cursor-not-allowed"
+      {/* Primary CTA — links straight to the latest Windows MSI on GitHub */}
+      {/* Releases. Update DOWNLOAD_URL above when a new version ships.     */}
+      <a
+        href={DOWNLOAD_URL}
+        class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
       >
-        download <span class="text-ink-950/60 normal-case tracking-normal font-normal">— coming soon</span>
-      </button>
+        download <span class="text-ink-950/70 normal-case tracking-normal font-normal">— windows 10/11</span>
+      </a>
       <a
         href={GH}
         rel="noopener"
@@ -52,6 +54,13 @@ const SHOT_PINS = { w: 751, h: 874 };
         how it works
       </a>
     </div>
+
+    {/* Unsigned-installer heads-up so the SmartScreen prompt doesn't surprise
+        users and read as "this is malware". */}
+    <p class="mt-3 text-2xs text-ink-400 lowercase max-w-2xl leading-relaxed">
+      not yet code-signed — windows may show a "protected your pc" screen.
+      click <span class="text-ink-200">more info → run anyway</span> to install.
+    </p>
 
     <div class="mt-12 sm:mt-16">
       <img
@@ -189,15 +198,12 @@ const SHOT_PINS = { w: 751, h: 874 };
         dashboard. takes about three minutes if your toolchain's awake.
       </p>
       <div class="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          disabled
-          aria-disabled="true"
-          title="Installer coming soon"
-          class="bg-amber-600/40 text-ink-950/70 px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2 cursor-not-allowed"
+        <a
+          href={DOWNLOAD_URL}
+          class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
         >
-          download <span class="text-ink-950/60 normal-case tracking-normal font-normal">— coming soon</span>
-        </button>
+          download <span class="text-ink-950/70 normal-case tracking-normal font-normal">— windows 10/11</span>
+        </a>
         <a
           href={GH}
           rel="noopener"

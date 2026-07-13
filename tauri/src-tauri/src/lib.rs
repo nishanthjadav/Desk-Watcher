@@ -23,7 +23,8 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
+use serde::{Deserialize, Serialize};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
@@ -259,6 +260,148 @@ fn mark_close_hint_shown() {
     }
 }
 
+// ── App settings ───────────────────────────────────────────────────────────
+// User preferences that the NATIVE side needs to honor. Right now that's just
+// the close action, which the Rust `on_window_event` handler must read
+// synchronously when the user X's the window — it cannot reach into the
+// webview's localStorage there, so this lives in a Rust-owned JSON file at
+// %APPDATA%\desk-watcher\settings.json. The frontend Settings page reads and
+// writes it through the tauri commands below.
+//
+// Autostart is deliberately NOT stored here: it's owned by the OS (the Windows
+// Run key) and read back via the autostart plugin, which is the real source of
+// truth. Work hours stay in the frontend's localStorage.
+
+const CLOSE_ACTION_TRAY: &str = "tray";
+const CLOSE_ACTION_QUIT: &str = "quit";
+
+#[derive(Serialize, Deserialize, Clone)]
+struct AppSettings {
+    // "tray" (default) → X hides to the tray, tracking continues.
+    // "quit"           → X fully exits the app and stops the sidecars.
+    close_action: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        AppSettings {
+            close_action: CLOSE_ACTION_TRAY.to_string(),
+        }
+    }
+}
+
+fn settings_path() -> Result<PathBuf, String> {
+    Ok(ui_state_dir()?.join("settings.json"))
+}
+
+// Read settings, falling back to defaults for a missing OR corrupt file — a
+// broken settings file must never wedge the app closed.
+fn read_settings() -> AppSettings {
+    let path = match settings_path() {
+        Ok(p) => p,
+        Err(_) => return AppSettings::default(),
+    };
+    match fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str::<AppSettings>(&s).unwrap_or_default(),
+        Err(_) => AppSettings::default(),
+    }
+}
+
+// Persist settings atomically (write temp in the same dir, then rename) so a
+// reader never sees a half-written file. Best-effort: returns an error string
+// the command layer can surface, but never panics.
+fn write_settings(settings: &AppSettings) -> Result<(), String> {
+    let path = settings_path()?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| "settings path has no parent".to_string())?;
+    fs::create_dir_all(dir).map_err(|e| format!("create settings dir: {e}"))?;
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("serialize settings: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json.as_bytes()).map_err(|e| format!("write temp settings: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("rename settings into place: {e}")
+    })?;
+    Ok(())
+}
+
+// ── Tauri commands (invoked from the Settings page) ──────────────────────────
+
+#[tauri::command]
+fn get_settings() -> AppSettings {
+    read_settings()
+}
+
+#[tauri::command]
+fn set_close_action(action: String) -> Result<(), String> {
+    if action != CLOSE_ACTION_TRAY && action != CLOSE_ACTION_QUIT {
+        return Err(format!("invalid close_action: {action}"));
+    }
+    let mut s = read_settings();
+    s.close_action = action;
+    write_settings(&s)
+}
+
+#[tauri::command]
+fn get_autostart_enabled(app: tauri::AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let mgr = app.autolaunch();
+    let result = if enabled { mgr.enable() } else { mgr.disable() };
+    result.map_err(|e| format!("toggle autostart: {e}"))?;
+    // Return the real post-toggle state so the UI reflects ground truth.
+    Ok(mgr.is_enabled().unwrap_or(enabled))
+}
+
+#[tauri::command]
+fn open_data_dir() -> Result<(), String> {
+    let dir = ui_state_dir()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("create data dir: {e}"))?;
+    // Open the folder in the OS file manager. Using an explicit Command keeps
+    // us free of an extra opener plugin + capability entry.
+    #[cfg(windows)]
+    {
+        Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            // explorer.exe returns a nonzero exit code even on success, so we
+            // only care that the spawn itself worked.
+            .map_err(|e| format!("open explorer: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("open finder: {e}"))?;
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("xdg-open: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    let state = app.state::<SidecarState>();
+    shutdown(&state);
+    app.exit(0);
+}
+
 fn shutdown(state: &SidecarState) {
     // Kill sidecars best-effort. On Windows, dropping the Job Object below
     // is the real cleanup — this just gets us a tidy exit path in the
@@ -319,6 +462,15 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
+        .invoke_handler(tauri::generate_handler![
+            get_settings,
+            set_close_action,
+            get_autostart_enabled,
+            set_autostart_enabled,
+            open_data_dir,
+            get_app_version,
+            quit_app,
+        ])
         .manage(SidecarState {
             watcher: Mutex::new(None),
             api: Mutex::new(None),
@@ -401,9 +553,16 @@ pub fn run() {
                 let state = window.state::<SidecarState>();
                 let tray_ok = state.tray_ok.lock().map(|g| *g).unwrap_or(false);
 
-                if tray_ok {
+                // The user's close preference lives in settings.json (set from
+                // the Settings page). Default is "tray". If the tray failed to
+                // build we MUST fully quit regardless of the pref — hiding with
+                // no tray would strand an unquittable background process.
+                let wants_tray = read_settings().close_action != CLOSE_ACTION_QUIT;
+
+                if tray_ok && wants_tray {
                     // Close-to-background: keep the sidecars tracking, just
-                    // hide the window. Quit is explicit via the tray menu.
+                    // hide the window. Quit is explicit via the tray menu or
+                    // the Settings page.
                     api.prevent_close();
                     let _ = window.hide();
 
@@ -414,13 +573,14 @@ pub fn run() {
                         window.app_handle().dialog()
                             .message(
                                 "Desk Watcher keeps running in the background to track your day. \
-                                 Right-click the tray icon to open it again or to quit.",
+                                 Right-click the tray icon to quit, or change this in Settings.",
                             )
                             .title("Still running in the tray")
                             .blocking_show();
                     }
                 } else {
-                    // No tray → hiding would strand the process. Full quit.
+                    // Either the user chose "quit on close", or there's no tray
+                    // to hide into. Full shutdown; allow the close to proceed.
                     shutdown(&state);
                 }
             }
@@ -441,26 +601,17 @@ pub fn run() {
 // Build the system tray icon and its menu. Returns Err if the tray can't be
 // created — the caller falls back to close-to-exit so the app is never
 // unquittable.
+//
+// The menu is deliberately minimal: a single "Quit Desk Watcher" item.
+// Everything that used to live here (opening the dashboard, the autostart
+// toggle) is now handled in the in-app Settings page. Left-clicking the tray
+// icon still opens the dashboard, which is the discovery path to Settings.
 fn build_tray(app: &tauri::AppHandle) -> Result<(), String> {
-    let open = MenuItemBuilder::with_id("open", "Open Dashboard")
-        .build(app)
-        .map_err(|e| format!("open item: {e}"))?;
-
-    // Reflect the current autostart state in the checkbox.
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    let autostart = CheckMenuItemBuilder::with_id("autostart", "Start on login")
-        .checked(autostart_enabled)
-        .build(app)
-        .map_err(|e| format!("autostart item: {e}"))?;
-
     let quit = MenuItemBuilder::with_id("quit", "Quit Desk Watcher")
         .build(app)
         .map_err(|e| format!("quit item: {e}"))?;
 
     let menu = MenuBuilder::new(app)
-        .item(&open)
-        .item(&autostart)
-        .separator()
         .item(&quit)
         .build()
         .map_err(|e| format!("menu: {e}"))?;
@@ -475,21 +626,10 @@ fn build_tray(app: &tauri::AppHandle) -> Result<(), String> {
         .tooltip("Desk Watcher")
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => show_main_window(app),
             "quit" => {
                 let state = app.state::<SidecarState>();
                 shutdown(&state);
                 app.exit(0);
-            }
-            "autostart" => {
-                let mgr = app.autolaunch();
-                let now_enabled = mgr.is_enabled().unwrap_or(false);
-                let result = if now_enabled { mgr.disable() } else { mgr.enable() };
-                if let Err(e) = result {
-                    eprintln!("toggle autostart: {e}");
-                }
-                // Sync the checkbox to the real post-toggle state.
-                let _ = autostart.set_checked(mgr.is_enabled().unwrap_or(false));
             }
             _ => {}
         })

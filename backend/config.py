@@ -64,10 +64,16 @@ class Config:
 
     # The OpenCV preview window (live camera feed with pose overlay) is a
     # dev/debugging aid, not something a background productivity tracker
-    # should pop up. Default OFF so the packaged app watches silently in the
-    # background; set SHOW_PREVIEW=true to see the annotated feed while
-    # developing.
-    show_preview: bool = os.getenv("SHOW_PREVIEW", "false").lower() == "true"
+    # should pop up. Two layers keep it hidden in the shipped app:
+    #   1. In a PyInstaller-frozen build (sys.frozen), it is FORCED off — the
+    #      packaged app must never show the "at desk"/"away" window regardless
+    #      of any ambient SHOW_PREVIEW env var the sidecar might inherit.
+    #   2. From source (dev), it defaults OFF but honors SHOW_PREVIEW=true so
+    #      you can see the annotated feed while developing.
+    show_preview: bool = (
+        not getattr(sys, "frozen", False)
+        and os.getenv("SHOW_PREVIEW", "false").lower() == "true"
+    )
     privacy_mode: bool = os.getenv("PRIVACY_MODE", "false").lower() == "true"
 
     db_path: str = os.getenv("DB_PATH", _default_db_path())

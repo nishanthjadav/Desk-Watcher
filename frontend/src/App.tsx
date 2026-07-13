@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Panel } from "./components/Panel";
+import { Settings } from "./components/Settings";
 import { PinPicker, TileGrid, usePinControls } from "./components/TileGrid";
 import { WorkHoursSelect } from "./components/WorkHoursSelect";
 import { useRefutations, type Refutation } from "./hooks/useRefutations";
@@ -22,10 +23,23 @@ import type {
 } from "./types";
 
 // In dev (`npm run dev`) the FastAPI server sits on :8000, matching the
-// old README instructions. The Tauri build sets VITE_API_URL to the
-// packaged uvicorn sidecar's port (127.0.0.1:8765) via `.env.production`,
-// so the same App.tsx works in both worlds.
-const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+// old README instructions. The Tauri build bakes VITE_API_URL to the
+// packaged uvicorn sidecar's port (127.0.0.1:8765) at build time
+// (packaging/build.ps1), so the same App.tsx works in both worlds.
+//
+// Defense in depth: if VITE_API_URL somehow didn't get injected into the
+// bundle, fall back based on WHERE we're running. Inside the Tauri webview
+// the origin is `tauri://localhost` / `http://tauri.localhost` (see the CORS
+// allow-list in backend/api.py), so the sidecar is on :8765 — falling back to
+// the dev :8000 there would strand the app on a dead port (the exact bug that
+// shipped once). Only a real browser dev session should hit :8000.
+const isTauri =
+  typeof window !== "undefined" &&
+  (window.location.protocol === "tauri:" ||
+    window.location.hostname === "tauri.localhost");
+const API =
+  import.meta.env.VITE_API_URL ??
+  (isTauri ? "http://127.0.0.1:8765" : "http://localhost:8000");
 const POLL_MS = 30_000;
 // Health signal — poll faster than the 30s data cadence so a camera problem
 // surfaces (and clears) within ~10s rather than half a minute.
@@ -1034,6 +1048,15 @@ function BreaksList({
   );
 }
 
+// Grace period after launch before the health banner may appear. The
+// watcher takes ~5-7s to open the camera and write its first status, during
+// which `/status` reports `stale: true` (nothing written yet) — a *normal*
+// startup state, not a problem. Showing "the camera isn't active" in that
+// window is misleading, so we stay quiet until the watcher has had a fair
+// chance to come up. A genuine problem (camera held by another app) persists
+// well past this and the banner then appears correctly.
+const STATUS_GRACE_MS = 10_000;
+
 // Health banner shown ONLY when something is wrong — camera not active, or
 // the watcher process not reporting. When everything is healthy the banner
 // never appears (no "all good" noise). It clears on its own once `/status`
@@ -1044,13 +1067,21 @@ function BreaksList({
 function StatusBanner({ status }: { status: WatcherStatus | null }) {
   const [dismissed, setDismissed] = useState<string | null>(null);
 
+  // Suppress the banner during the launch grace period (see STATUS_GRACE_MS).
+  // `pastGrace` flips to true once, GRACE_MS after mount, and stays true.
+  const [pastGrace, setPastGrace] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setPastGrace(true), STATUS_GRACE_MS);
+    return () => clearTimeout(id);
+  }, []);
+
   // Show a banner only for an actual problem:
   //   camera_ok === false  → watcher reported the camera isn't working
   //   stale === true       → watcher stopped reporting (crashed/never started)
   // Everything else — healthy (camera_ok true & fresh), or still starting up
   // (camera_ok null & fresh) — shows nothing.
   const hasProblem = !!status && (status.camera_ok === false || status.stale === true);
-  if (!hasProblem) return null;
+  if (!hasProblem || !pastGrace) return null;
 
   const message =
     status!.camera_ok === false
@@ -1085,6 +1116,7 @@ export default function App() {
   const lunchCfg = LUNCH_RANGES.find((r) => r.value === lunchRange)!;
   const pinControls = usePinControls();
   const { hours, setHours } = useWorkHours();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // The heatmap and the lunch chart both consume `/productivity`. Fetch
   // ONCE with the larger window so neither ends up data-starved when the
@@ -1146,7 +1178,33 @@ export default function App() {
             <h1 className="text-amber-400 font-semibold tracking-wide text-lg">DESK WATCHER</h1>
             <span className="text-ink-300 text-sm">{dateLabel}</span>
           </div>
-          <span className="font-mono text-ink-200 tabular text-sm">{clockLabel}</span>
+          <div className="flex items-center gap-4">
+            <span className="font-mono text-ink-200 tabular text-sm">{clockLabel}</span>
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Settings"
+              title="Settings"
+              className="text-ink-400 hover:text-amber-400 transition-colors self-center"
+            >
+              {/* Gear icon (inline SVG so we add no icon dependency). */}
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1280,6 +1338,9 @@ export default function App() {
       {/* Pin picker modal — rendered at the App root so it overlays
           the entire dashboard, not just a single panel. */}
       <PinPicker controls={pinControls} />
+
+      {/* Settings modal — same root-level placement so it overlays everything. */}
+      <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

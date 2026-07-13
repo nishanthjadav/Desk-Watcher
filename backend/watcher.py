@@ -221,45 +221,60 @@ def run_detection_loop(cap, landmarker, db) -> str:
         # only fires while we're actually pulling frames.
         _heartbeat_camera_ok()
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        ts_ms = int(time.time() * 1000)
-        result = landmarker.detect_for_video(mp_image, ts_ms)
+        # Guard the per-frame detection/classification work. This is an
+        # always-on background tracker: a transient error in mediapipe,
+        # the classifier, YOLO, or a DB commit must NOT kill the watcher for
+        # the rest of the session. Log it, roll back any half-open DB txn,
+        # and move on to the next frame. Camera loss and the quit key are
+        # handled OUTSIDE this guard so their control flow is unaffected.
+        try:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            ts_ms = int(time.time() * 1000)
+            result = landmarker.detect_for_video(mp_image, ts_ms)
 
-        maybe_run_phone_detection(frame)
+            maybe_run_phone_detection(frame)
 
-        landmarks = extract_landmarks(result)
-        now = time.time()
+            landmarks = extract_landmarks(result)
+            now = time.time()
 
-        if landmarks is None:
-            if in_frame:
-                in_frame = False
-                if should_log_event("away"):
-                    log_event(db, "away", confidence=1.0)
-                    print(f"[{time.strftime('%H:%M:%S')}] away")
-            frame_buffer.clear()
-        else:
-            in_frame = True
-            frame_buffer.append((now, landmarks))
+            if landmarks is None:
+                if in_frame:
+                    in_frame = False
+                    if should_log_event("away"):
+                        log_event(db, "away", confidence=1.0)
+                        print(f"[{time.strftime('%H:%M:%S')}] away")
+                frame_buffer.clear()
+            else:
+                in_frame = True
+                frame_buffer.append((now, landmarks))
 
-            cutoff = now - config.window_size_s
-            frame_buffer = [(t, lm) for t, lm in frame_buffer if t >= cutoff]
+                cutoff = now - config.window_size_s
+                frame_buffer = [(t, lm) for t, lm in frame_buffer if t >= cutoff]
 
-            if len(frame_buffer) >= config.min_frames_to_classify:
-                activity, confidence = classifier.predict(
-                    frame_buffer,
-                    phone_visible=_last_phone_visible,
-                )
-                if should_log_event(activity):
-                    log_event(db, activity, confidence=confidence)
-                    print(f"[{time.strftime('%H:%M:%S')}] {activity} ({confidence:.2f})")
+                if len(frame_buffer) >= config.min_frames_to_classify:
+                    activity, confidence = classifier.predict(
+                        frame_buffer,
+                        phone_visible=_last_phone_visible,
+                    )
+                    if should_log_event(activity):
+                        log_event(db, activity, confidence=confidence)
+                        print(f"[{time.strftime('%H:%M:%S')}] {activity} ({confidence:.2f})")
 
-        if config.show_preview:
-            if not config.privacy_mode:
-                draw_landmarks(frame, result)
-                draw_phone_bbox(frame, _last_phone_bbox if _last_phone_visible else None)
-            cv2.putText(frame, last_event, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.imshow("Desk Watcher", frame)
+            if config.show_preview:
+                if not config.privacy_mode:
+                    draw_landmarks(frame, result)
+                    draw_phone_bbox(frame, _last_phone_bbox if _last_phone_visible else None)
+                cv2.putText(frame, last_event, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.imshow("Desk Watcher", frame)
+        except Exception as e:
+            # Roll back so a failed commit doesn't poison the next frame's
+            # session state. The DB session is otherwise reusable.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            print(f"[watcher] frame processing error (skipping frame): {e}", file=sys.stderr)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             return "quit"

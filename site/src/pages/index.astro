@@ -8,7 +8,7 @@ const GH = "https://github.com/nishanthjadav/desk-watcher";
 // Direct link to the latest Windows installer (GitHub Releases asset).
 // Bump the version tag here when a new release ships.
 const DOWNLOAD_URL =
-  "https://github.com/nishanthjadav/Desk-Watcher/releases/download/v0.1.0/Desk%20Watcher_0.1.0_x64_en-US.msi";
+  "https://github.com/nishanthjadav/Desk-Watcher/releases/tag/v0.1.0";
 
 // Real PNG dimensions, so the browser reserves the right space and the
 // page doesn't shift when the images load. Read from the source files
@@ -38,7 +38,7 @@ const SHOT_PINS = { w: 751, h: 874 };
         href={DOWNLOAD_URL}
         class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
       >
-        download <span class="text-ink-950/70 normal-case tracking-normal font-normal">— windows 10/11</span>
+        download <span class="text-ink-950/70 normal-case tracking-normal font-normal">- windows 10/11</span>
       </a>
       <a
         href={GH}
@@ -58,7 +58,7 @@ const SHOT_PINS = { w: 751, h: 874 };
     {/* Unsigned-installer heads-up so the SmartScreen prompt doesn't surprise
         users and read as "this is malware". */}
     <p class="mt-3 text-2xs text-ink-400 lowercase max-w-2xl leading-relaxed">
-      not yet code-signed — windows may show a "protected your pc" screen.
+      not yet code-signed, so windows may show a "protected your pc" screen.
       click <span class="text-ink-200">more info → run anyway</span> to install.
     </p>
 

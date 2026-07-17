@@ -13,11 +13,14 @@ const GH = "https://github.com/nishanthjadav/desk-watcher";
 const DOWNLOAD_WIN = "/api/download?os=win";
 const DOWNLOAD_MAC = "/api/download?os=mac";
 
-// Caveat shown on hover of the (i) info icon near the download buttons — keeps
-// the first-launch warnings out of the main flow without hiding them. Defined
-// once and reused by both download areas (hero + "get it").
-const DOWNLOAD_NOTE =
-  "not yet code-signed. windows may show a \"protected your pc\" screen — click more info → run anyway. on macos, right-click the app → open to get past gatekeeper. the mac build is apple-silicon only (m1 or newer).";
+// Per-platform first-launch caveats, shown on hover/focus of a small (i) icon
+// pinned to each download button's top-right corner — keeps the warnings out
+// of the main flow without hiding them. Defined once and reused by both
+// download areas (hero + "get it").
+const WIN_NOTE =
+  "not yet code-signed. windows may show a \"protected your pc\" screen — click more info → run anyway.";
+const MAC_NOTE =
+  "not yet code-signed. right-click the app → open to get past gatekeeper. apple-silicon only (m1 or newer).";
 
 // Real PNG dimensions, so the browser reserves the right space and the
 // page doesn't shift when the images load. Read from the source files
@@ -41,7 +44,7 @@ const SHOT_PINS = { w: 751, h: 874 };
     </p>
 
     <div class="mt-8 flex flex-wrap items-center gap-3">
-      <DownloadButtons winHref={DOWNLOAD_WIN} macHref={DOWNLOAD_MAC} note={DOWNLOAD_NOTE} />
+      <DownloadButtons winHref={DOWNLOAD_WIN} macHref={DOWNLOAD_MAC} winNote={WIN_NOTE} macNote={MAC_NOTE} />
       <a
         href={GH}
         rel="noopener"
@@ -194,7 +197,7 @@ const SHOT_PINS = { w: 751, h: 874 };
         dashboard. takes about three minutes if your toolchain's awake.
       </p>
       <div class="flex flex-wrap items-center gap-3">
-        <DownloadButtons winHref={DOWNLOAD_WIN} macHref={DOWNLOAD_MAC} note={DOWNLOAD_NOTE} />
+        <DownloadButtons winHref={DOWNLOAD_WIN} macHref={DOWNLOAD_MAC} winNote={WIN_NOTE} macNote={MAC_NOTE} />
         <a
           href={GH}
           rel="noopener"

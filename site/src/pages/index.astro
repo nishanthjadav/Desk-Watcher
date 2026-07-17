@@ -5,10 +5,14 @@ import SectionFrame from "../components/SectionFrame.astro";
 // Hard-coded once; grep-and-replace if the repo ever moves.
 const GH = "https://github.com/nishanthjadav/desk-watcher";
 
-// Direct link to the latest Windows installer (GitHub Releases asset).
-// Bump the version tag here when a new release ships.
-const DOWNLOAD_URL =
-  "https://github.com/nishanthjadav/Desk-Watcher/releases/tag/v0.1.0";
+// Direct links to the latest installers (GitHub Releases assets).
+// Bump the version tag in both when a new release ships.
+const DOWNLOAD_WIN =
+  "https://github.com/nishanthjadav/Desk-Watcher/releases/download/v0.1.0/Desk.Watcher_0.1.0_x64_en-US.msi";
+// macOS build is Apple Silicon (arm64) only for v0.1.0 — no Intel/x86_64 or
+// universal build yet. See the caveat note under the download buttons.
+const DOWNLOAD_MAC =
+  "https://github.com/nishanthjadav/Desk-Watcher/releases/download/v0.1.0/Desk.Watcher_0.1.0_aarch64.dmg";
 
 // Real PNG dimensions, so the browser reserves the right space and the
 // page doesn't shift when the images load. Read from the source files
@@ -32,14 +36,31 @@ const SHOT_PINS = { w: 751, h: 874 };
     </p>
 
     <div class="mt-8 flex flex-wrap items-center gap-3">
-      {/* Primary CTA — links straight to the latest Windows MSI on GitHub */}
-      {/* Releases. Update DOWNLOAD_URL above when a new version ships.     */}
-      <a
-        href={DOWNLOAD_URL}
-        class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
-      >
-        download <span class="text-ink-950/70 normal-case tracking-normal font-normal">- windows 10/11</span>
-      </a>
+      {/* Download pair — Windows + macOS grouped tight so they read as one    */}
+      {/* "pick your platform" unit. Each carries its OS logo. Update the      */}
+      {/* DOWNLOAD_WIN / DOWNLOAD_MAC hrefs above when a new version ships.     */}
+      <div class="flex items-center gap-2">
+        <a
+          href={DOWNLOAD_WIN}
+          class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
+        >
+          {/* Windows 4-pane logo. currentColor → inherits button text color.  */}
+          <svg viewBox="0 0 88 88" class="w-3.5 h-3.5" fill="currentColor" aria-hidden="true">
+            <path d="M0 12.4 36 7.5v34.9H0zM40.3 6.9 88 0v42.2H40.3zM0 46.6h36v34.9L0 76.6zM40.3 46.6H88V88l-47.7-6.7z"/>
+          </svg>
+          download <span class="text-ink-950/70 normal-case tracking-normal font-normal">- windows</span>
+        </a>
+        <a
+          href={DOWNLOAD_MAC}
+          class="text-ink-100 hover:text-ink-100 hover:bg-ink-850 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold border border-ink-600 inline-flex items-center gap-2"
+        >
+          {/* Apple logo. currentColor → inherits button text color.           */}
+          <svg viewBox="0 0 384 512" class="w-3.5 h-3.5" fill="currentColor" aria-hidden="true">
+            <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/>
+          </svg>
+          download <span class="text-ink-100/60 normal-case tracking-normal font-normal">- macos</span>
+        </a>
+      </div>
       <a
         href={GH}
         rel="noopener"
@@ -55,11 +76,13 @@ const SHOT_PINS = { w: 751, h: 874 };
       </a>
     </div>
 
-    {/* Unsigned-installer heads-up so the SmartScreen prompt doesn't surprise
-        users and read as "this is malware". */}
+    {/* Unsigned-installer heads-up so neither OS's first-launch warning reads
+        as "this is malware", plus the Apple-Silicon-only caveat for macOS. */}
     <p class="mt-3 text-2xs text-ink-400 lowercase max-w-2xl leading-relaxed">
-      not yet code-signed, so windows may show a "protected your pc" screen.
-      click <span class="text-ink-200">more info → run anyway</span> to install.
+      not yet code-signed. windows may show a "protected your pc" screen — click
+      <span class="text-ink-200">more info → run anyway</span>. on macos,
+      right-click the app → <span class="text-ink-200">open</span> to get past
+      gatekeeper. the mac build is apple-silicon only (m1 or newer).
     </p>
 
     <div class="mt-12 sm:mt-16">
@@ -190,7 +213,8 @@ const SHOT_PINS = { w: 751, h: 874 };
   <section class="max-w-6xl mx-auto px-6 pb-16">
     <SectionFrame title="get it">
       <p class="text-ink-200 leading-relaxed lowercase mb-6">
-        the windows + mac installer is coming. for now, clone the repo, run
+        grab the installer for your platform below. prefer to run from source?
+        clone the repo, run
         <span class="font-mono text-ink-100">python watcher.py</span> in one
         terminal,
         <span class="font-mono text-ink-100">uvicorn api:app</span> in another,
@@ -198,12 +222,26 @@ const SHOT_PINS = { w: 751, h: 874 };
         dashboard. takes about three minutes if your toolchain's awake.
       </p>
       <div class="flex flex-wrap items-center gap-3">
-        <a
-          href={DOWNLOAD_URL}
-          class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
-        >
-          download <span class="text-ink-950/70 normal-case tracking-normal font-normal">— windows 10/11</span>
-        </a>
+        <div class="flex items-center gap-2">
+          <a
+            href={DOWNLOAD_WIN}
+            class="bg-amber-600 text-ink-950 hover:bg-amber-500 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold inline-flex items-center gap-2"
+          >
+            <svg viewBox="0 0 88 88" class="w-3.5 h-3.5" fill="currentColor" aria-hidden="true">
+              <path d="M0 12.4 36 7.5v34.9H0zM40.3 6.9 88 0v42.2H40.3zM0 46.6h36v34.9L0 76.6zM40.3 46.6H88V88l-47.7-6.7z"/>
+            </svg>
+            download <span class="text-ink-950/70 normal-case tracking-normal font-normal">- windows</span>
+          </a>
+          <a
+            href={DOWNLOAD_MAC}
+            class="text-ink-100 hover:text-ink-100 hover:bg-ink-850 transition-colors px-4 py-2 text-2xs uppercase tracking-[0.16em] font-semibold border border-ink-600 inline-flex items-center gap-2"
+          >
+            <svg viewBox="0 0 384 512" class="w-3.5 h-3.5" fill="currentColor" aria-hidden="true">
+              <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/>
+            </svg>
+            download <span class="text-ink-100/60 normal-case tracking-normal font-normal">- macos</span>
+          </a>
+        </div>
         <a
           href={GH}
           rel="noopener"

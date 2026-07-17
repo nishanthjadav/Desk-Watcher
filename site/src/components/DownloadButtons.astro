@@ -29,9 +29,10 @@ const { winHref, macHref, winNote, macNote } = Astro.props;
       </svg>
       download <span class="text-ink-950/70 normal-case tracking-normal font-normal">- windows</span>
     </a>
-    {/* Corner info badge — own `group` so its tooltip is independent of mac's. */}
+    {/* Corner info badge — own `group` so its tooltip is independent of mac's.
+        Sits just above the button's top-right corner, not on top of it. */}
     <span
-      class="group absolute -top-2 -right-2 inline-flex"
+      class="group absolute bottom-full right-0 mb-1 inline-flex"
       tabindex="0"
       role="note"
       aria-label={winNote}
@@ -60,7 +61,7 @@ const { winHref, macHref, winNote, macNote } = Astro.props;
       download <span class="text-ink-100/60 normal-case tracking-normal font-normal">- macos</span>
     </a>
     <span
-      class="group absolute -top-2 -right-2 inline-flex"
+      class="group absolute bottom-full right-0 mb-1 inline-flex"
       tabindex="0"
       role="note"
       aria-label={macNote}

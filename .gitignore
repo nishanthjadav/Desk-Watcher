@@ -87,3 +87,10 @@ data/
 # MSI / installer output
 # =====================
 *.msi
+
+# =====================
+# macOS icon set — generated from icon.ico at build time (CI + local
+# build.sh), never committed. See release.yml "Generate macOS icon set".
+# =====================
+tauri/src-tauri/icon-source.png
+tauri/src-tauri/icons/icon.icns

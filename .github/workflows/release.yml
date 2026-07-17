@@ -62,8 +62,8 @@ jobs:
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/build.ps1
 
       - name: Build MSI
-        working-directory: tauri
-        run: npm run tauri build
+        working-directory: tauri/src-tauri
+        run: npm --prefix ../ run tauri build
 
       - name: Upload MSI
         uses: actions/upload-artifact@v4
@@ -124,17 +124,20 @@ jobs:
           im = Image.open("tauri/src-tauri/icons/icon.ico")
           im.size = max(im.ico.sizes())          # select the 256x256 frame
           frame = im.convert("RGBA").resize((1024, 1024), Image.LANCZOS)
-          frame.save("icon-source.png")
-          print("wrote icon-source.png at 1024x1024")
+          frame.save("tauri/src-tauri/icon-source.png")
+          print("wrote tauri/src-tauri/icon-source.png at 1024x1024")
           PY
-          npm --prefix tauri run tauri icon ../../icon-source.png
+          # Run `tauri icon` from the config dir so its source-path arg is
+          # resolved unambiguously (it resolves relative to cwd, and running via
+          # `npm --prefix` does NOT change cwd — the earlier `../../` overshot).
+          cd tauri/src-tauri && npm --prefix ../ run tauri icon icon-source.png
 
       - name: Build .app and .dmg
-        working-directory: tauri
+        working-directory: tauri/src-tauri
         # No signing identity in CI, so build unsigned. Gatekeeper will warn on
         # first launch (right-click → Open, or `xattr -dr com.apple.quarantine`).
         # Wire APPLE_CERTIFICATE / notarization secrets here when they exist.
-        run: npm run tauri build
+        run: npm --prefix ../ run tauri build
 
       - name: Upload .dmg
         uses: actions/upload-artifact@v4

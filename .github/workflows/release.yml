@@ -135,6 +135,14 @@ jobs:
           # which is where tauri.conf.json references icon.icns.
           node tauri/node_modules/@tauri-apps/cli/tauri.js icon "$PWD/icon-source.png"
 
+      - name: Freeze + stage sidecars
+        # macOS counterpart of the Windows job's build.ps1 step: builds the
+        # frontend (step 1) and freezes+stages both Python sidecars into
+        # tauri/src-tauri/binaries/ BEFORE `tauri build` archives them into the
+        # .app. Without this the .app ships with no sidecars and the bundle
+        # build fails on the missing bundle.resources dirs.
+        run: bash packaging/build.sh
+
       - name: Build .app and .dmg
         working-directory: tauri/src-tauri
         # No signing identity in CI, so build unsigned. Gatekeeper will warn on

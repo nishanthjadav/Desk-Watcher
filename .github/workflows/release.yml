@@ -124,13 +124,16 @@ jobs:
           im = Image.open("tauri/src-tauri/icons/icon.ico")
           im.size = max(im.ico.sizes())          # select the 256x256 frame
           frame = im.convert("RGBA").resize((1024, 1024), Image.LANCZOS)
-          frame.save("tauri/src-tauri/icon-source.png")
-          print("wrote tauri/src-tauri/icon-source.png at 1024x1024")
+          frame.save("icon-source.png")
+          print("wrote icon-source.png at 1024x1024")
           PY
-          # Run `tauri icon` from the config dir so its source-path arg is
-          # resolved unambiguously (it resolves relative to cwd, and running via
-          # `npm --prefix` does NOT change cwd — the earlier `../../` overshot).
-          cd tauri/src-tauri && npm --prefix ../ run tauri icon icon-source.png
+          # Invoke the tauri CLI directly with an ABSOLUTE source path. `tauri
+          # icon` resolves its arg against the tauri project root (not the shell
+          # cwd), and `npm --prefix` doesn't change cwd — both bit us with
+          # relative paths. An absolute path sidesteps the whole question. The
+          # generated set lands in tauri/src-tauri/icons/ (tauri's default),
+          # which is where tauri.conf.json references icon.icns.
+          node tauri/node_modules/@tauri-apps/cli/tauri.js icon "$PWD/icon-source.png"
 
       - name: Build .app and .dmg
         working-directory: tauri/src-tauri

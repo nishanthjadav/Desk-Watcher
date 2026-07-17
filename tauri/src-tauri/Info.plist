@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS-only. Tauri auto-detects src-tauri/Info.plist and merges it into the
+  generated app bundle's Info.plist at build time (Windows/Linux ignore it).
+
+  NSCameraUsageDescription is mandatory for the camera: the `watcher` sidecar
+  opens the webcam via OpenCV/AVFoundation. Without a usage string reachable
+  through the app bundle, macOS TCC blocks the camera SILENTLY — VideoCapture
+  returns no frames and never raises, so the app looks alive but tracks
+  nothing. The string is what the user sees in the permission prompt.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Desk Watcher uses your camera locally to detect desk activity. No video is stored or transmitted.</string>
+</dict>
+</plist>

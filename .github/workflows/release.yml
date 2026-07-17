@@ -1,0 +1,179 @@
+name: release
+
+# Per-OS packaging build. `tests.yml` covers the fast unit tests on every
+# push/PR; THIS workflow does the slow, heavy artifact builds (freeze the
+# Python sidecars with PyInstaller, then `tauri build`) and only runs on a
+# version tag or a manual dispatch — installing torch/opencv/mediapipe and
+# freezing them takes many minutes per OS, so we don't want it on every push.
+#
+# Referenced by packaging/build.ps1 and packaging/build.sh: those scripts are
+# the LOCAL freeze+stage flow; the steps below are the CI equivalent, one job
+# per OS. The staging scripts and this file must stay in sync — if the local
+# flow changes (new spec, new stage step), mirror it here.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri
+
+      - name: Install Python deps (runtime + build)
+        # PyInstaller freezes whatever is installed in the active interpreter,
+        # so the FULL runtime requirements must be present here (unlike the
+        # tests job, which installs only requirements-dev.txt).
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r packaging/requirements-build.txt
+
+      - name: Install frontend deps
+        run: npm --prefix frontend ci
+
+      - name: Install tauri CLI deps
+        run: npm --prefix tauri ci
+
+      - name: Freeze + stage sidecars
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/build.ps1
+
+      - name: Build MSI
+        working-directory: tauri
+        run: npm run tauri build
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: desk-watcher-windows-msi
+          path: tauri/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri
+
+      - name: Install Python deps (runtime + build)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r packaging/requirements-build.txt
+
+      - name: Install frontend deps
+        run: npm --prefix frontend ci
+
+      - name: Install tauri CLI deps
+        run: npm --prefix tauri ci
+
+      - name: Generate macOS icon set (.icns)
+        # tauri.conf.json references icons/icon.icns, which we do NOT commit —
+        # the only source art in the repo is the Windows icon.ico. Generate the
+        # full macOS icon set here from the largest frame in the .ico.
+        #
+        # `tauri icon` wants a >=1024x1024 PNG source; the .ico tops out at
+        # 256x256, so we extract that frame and upscale to 1024. It's a
+        # stopgap for a first release — replace icon.ico's source art with a
+        # native 1024px asset when one exists for a crisp icon.
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from PIL import Image
+          im = Image.open("tauri/src-tauri/icons/icon.ico")
+          im.size = max(im.ico.sizes())          # select the 256x256 frame
+          frame = im.convert("RGBA").resize((1024, 1024), Image.LANCZOS)
+          frame.save("icon-source.png")
+          print("wrote icon-source.png at 1024x1024")
+          PY
+          npm --prefix tauri run tauri icon ../../icon-source.png
+
+      - name: Build .app and .dmg
+        working-directory: tauri
+        # No signing identity in CI, so build unsigned. Gatekeeper will warn on
+        # first launch (right-click → Open, or `xattr -dr com.apple.quarantine`).
+        # Wire APPLE_CERTIFICATE / notarization secrets here when they exist.
+        run: npm run tauri build
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: desk-watcher-macos-dmg
+          path: tauri/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Upload .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: desk-watcher-macos-app
+          path: tauri/src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error
+
+  # Publish the per-OS artifacts as downloadable assets on a GitHub Release.
+  # The upload-artifact steps above only produce CI artifacts (visible on the
+  # run page, gone after retention) — NOT public download URLs. Without this
+  # job the landing-page download link has nothing to point at. Runs only for
+  # tag pushes (a manual workflow_dispatch build has no tag to release against).
+  release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The .dmg (macOS) and .msi (Windows) are what users download; the
+          # raw .app is CI-only, so it's intentionally not attached here.
+          files: |
+            artifacts/desk-watcher-macos-dmg/*.dmg
+            artifacts/desk-watcher-windows-msi/*.msi
+          fail_on_unmatched_files: true
+          generate_release_notes: true

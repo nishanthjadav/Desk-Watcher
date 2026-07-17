@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings even when checked out on Windows — a
+# CRLF shebang line makes macOS/Linux fail with "bad interpreter: no such file
+# or directory". packaging/build.sh is run directly by CI on macos-latest.
+*.sh text eol=lf

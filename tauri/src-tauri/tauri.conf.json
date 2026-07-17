@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm --prefix ../../frontend run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pwsh -NoProfile -ExecutionPolicy Bypass -Command \"& '../../packaging/build.ps1'\"",
+    "beforeBuildCommand": "npm --prefix ../../frontend run build",
     "frontendDist": "../../frontend/dist"
   },
   "app": {
@@ -29,8 +29,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi"],
+    "targets": ["msi", "dmg", "app"],
     "icon": [
+      "icons/icon.icns",
       "icons/icon.ico"
     ],
     "resources": [
@@ -40,6 +41,9 @@
     "copyright": "",
     "category": "Productivity",
     "shortDescription": "Camera-driven desk activity dashboard",
-    "longDescription": "Runs a background watcher on your webcam and shows a live dashboard of desk activity — sips, phone use, breaks, lunch."
+    "longDescription": "Runs a background watcher on your webcam and shows a live dashboard of desk activity — sips, phone use, breaks, lunch.",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

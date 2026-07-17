@@ -1,20 +1,22 @@
-# One-shot Python+frontend prep. Invoked automatically by Tauri's
-# `beforeBuildCommand` (see tauri/src-tauri/tauri.conf.json), so the normal
-# way to produce an MSI is a single command from the repo root:
+# One-shot Python+frontend prep for a LOCAL WINDOWS build.
 #
-#   cd tauri && npm run tauri build
+# As of the cross-platform (macOS) work, Tauri's `beforeBuildCommand` only
+# builds the frontend — sidecar freezing is NO LONGER wired into `tauri build`
+# (CI drives it per-OS; see .github/workflows/). So the local Windows flow is
+# now two explicit commands from the repo root:
 #
-# That runs this script first (steps 1-4 below), then Tauri archives the
-# staged sidecars into the MSI. You can also run this script standalone
-# (`pwsh packaging/build.ps1`) to re-freeze the sidecars without building
-# the MSI.
+#   pwsh packaging/build.ps1          # freeze + stage the sidecars
+#   cd tauri && npm run tauri build   # builds frontend (beforeBuildCommand) + MSI
+#
+# This script still builds the frontend too (step 1) so a standalone run is
+# self-contained, but the authoritative frontend build for the MSI is the one
+# Tauri runs via beforeBuildCommand.
 #
 # Order of operations matters:
-#   1. Frontend must build BEFORE Tauri, because Tauri bundles frontend/dist/.
-#   2. PyInstaller must run BEFORE Tauri, because both sidecar `onedir` trees
-#      (exe + _internal/ full of DLLs) get staged into
-#      tauri/src-tauri/binaries/ before `tauri build` archives them as MSI
-#      resources.
+#   1. Frontend build (also done by Tauri; harmless to repeat here).
+#   2. PyInstaller must run BEFORE `tauri build`, because both sidecar `onedir`
+#      trees (exe + _internal/ full of DLLs) get staged into
+#      tauri/src-tauri/binaries/ before Tauri archives them as MSI resources.
 #
 # Sidecar packaging note: we do NOT use Tauri's `externalBin` mechanism.
 # `externalBin` bundles a single file per entry and does not preserve the

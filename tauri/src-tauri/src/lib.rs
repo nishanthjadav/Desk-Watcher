@@ -132,10 +132,16 @@ fn sidecar_path(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
         .path()
         .resource_dir()
         .map_err(|e| format!("resource_dir(): {e}"))?;
+    // PyInstaller onedir emits `{name}.exe` on Windows and a bare `{name}`
+    // (no extension) on macOS/Linux.
+    #[cfg(windows)]
+    let file_name = format!("{name}.exe");
+    #[cfg(not(windows))]
+    let file_name = name.to_string();
     let exe = resource_dir
         .join("binaries")
         .join(name)
-        .join(format!("{name}.exe"));
+        .join(file_name);
     if !exe.exists() {
         return Err(format!(
             "sidecar exe not found: {}",
@@ -197,24 +203,45 @@ fn spawn_sidecar(app: &tauri::AppHandle, name: &str) -> Result<Child, String> {
         .map_err(|e| format!("spawn {name}: {e}"))
 }
 
-// Open (truncating) the log file for a sidecar at
-// %APPDATA%\desk-watcher\logs\{name}.log — the same desk-watcher appdata
-// folder the Python side uses for its DB and status file, so all diagnostics
-// live in one place. Truncate-on-open keeps logs to one session's worth
-// rather than growing unbounded across launches.
+// Open (truncating) the log file for a sidecar under the desk-watcher appdata
+// folder's logs/ subdir — the same folder the Python side uses for its DB and
+// status file (see appdata_dir), so all diagnostics live in one place.
+// Truncate-on-open keeps logs to one session's worth rather than growing
+// unbounded across launches.
 fn log_dir() -> Result<PathBuf, String> {
-    // Match backend/config.py: Windows -> %APPDATA%, else a sensible home
-    // fallback. dirs/appdata via std env keeps us free of an extra crate.
+    Ok(appdata_dir()?.join("logs"))
+}
+
+// Resolve the per-user desk-watcher appdata directory. This MUST match
+// backend/config.py::_default_db_path so the Rust-owned files (settings.json,
+// logs, .close_hint_shown) land in the SAME folder as the Python side's DB and
+// status file — otherwise open_data_dir opens the wrong place and the two sides
+// disagree about where state lives.
+//
+//   Windows: %APPDATA%\desk-watcher
+//   macOS:   ~/Library/Application Support/desk-watcher
+//   Linux:   $XDG_DATA_HOME/desk-watcher (or ~/.local/share/desk-watcher)
+//
+// Stdlib env only — no extra crate, same as the Python side deliberately
+// avoiding platformdirs.
+fn appdata_dir() -> Result<PathBuf, String> {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .ok_or_else(|| "APPDATA not set".to_string())?;
-    #[cfg(not(windows))]
+
+    #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(".local/share"))
+        .map(|h| PathBuf::from(h).join("Library/Application Support"))
         .ok_or_else(|| "HOME not set".to_string())?;
 
-    Ok(base.join("desk-watcher").join("logs"))
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .ok_or_else(|| "neither XDG_DATA_HOME nor HOME set".to_string())?;
+
+    Ok(base.join("desk-watcher"))
 }
 
 fn open_log_file(name: &str) -> Result<fs::File, String> {
@@ -230,17 +257,9 @@ fn open_log_file(name: &str) -> Result<fs::File, String> {
 }
 
 // Path to the small UI-state marker used for one-time prompts. Lives in the
-// same %APPDATA%\desk-watcher\ folder as the DB, logs, and status file.
+// same desk-watcher appdata folder as the DB, logs, and status file.
 fn ui_state_dir() -> Result<PathBuf, String> {
-    #[cfg(windows)]
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| "APPDATA not set".to_string())?;
-    #[cfg(not(windows))]
-    let base = std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(".local/share"))
-        .ok_or_else(|| "HOME not set".to_string())?;
-    Ok(base.join("desk-watcher"))
+    appdata_dir()
 }
 
 // Has the "we keep running in the tray" hint been shown before? We use a
